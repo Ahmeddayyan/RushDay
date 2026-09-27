@@ -53,6 +53,16 @@ Then:
 dotnet run --project src\RushDay.Api -c Release      # http://localhost:5080
 ```
 
+The front end lives in `src/RushDay.Web` (Vite + React + TypeScript; needs Node 24). The API serves its
+production build from `src/RushDay.Api/wwwroot`, so there is one process and one URL:
+
+```powershell
+cd src\RushDay.Web
+npm install
+npm run dev          # Vite dev server on http://localhost:5173, proxying /api, /health, /openapi to :5080
+npm run build        # writes src\RushDay.Api\wwwroot; the API serves it at http://localhost:5080
+```
+
 Open http://localhost:5080 for the dashboard UI, or use `src/RushDay.Api/RushDay.Api.http`, or try:
 
 ```
@@ -79,6 +89,10 @@ See [load/README.md](load/README.md). Summaries land in `load/results/` and are 
 ```powershell
 dotnet test tests\RushDay.UnitTests
 dotnet test tests\RushDay.IntegrationTests   # needs Docker (Testcontainers); CI runs these on Linux
+
+cd src\RushDay.Web
+npm test                                     # Vitest component tests (jsdom)
+npm run test:e2e                             # Playwright smoke test against a running API on :5080
 ```
 
 ## Layout

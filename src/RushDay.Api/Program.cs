@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Net.Http.Headers;
 using RushDay.Api;
 using RushDay.Api.Endpoints;
 using RushDay.Infrastructure;
@@ -39,8 +40,24 @@ if (seedCommand)
     return;
 }
 
-app.UseDefaultFiles();
-app.UseStaticFiles();
+// wwwroot holds the Vite build of src/RushDay.Web. Hashed files under /assets never change, so they can be
+// cached for a year; index.html (and anything else) must be revalidated so a deploy shows up on the next load.
+var staticFiles = new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        var headers = context.Context.Response.GetTypedHeaders();
+        headers.CacheControl = context.Context.Request.Path.StartsWithSegments("/assets")
+            ? new CacheControlHeaderValue
+            {
+                Public = true,
+                MaxAge = TimeSpan.FromDays(365),
+                Extensions = { new NameValueHeaderValue("immutable") },
+            }
+            : new CacheControlHeaderValue { NoCache = true };
+    },
+};
+app.UseStaticFiles(staticFiles);
 
 app.MapOpenApi();
 app.MapHealthChecks("/health");
@@ -61,6 +78,17 @@ app.MapGet("/api", () => TypedResults.Ok(new
 
 app.MapStudentEndpoints();
 app.MapModuleEndpoints();
+
+// An unknown /api route is a client bug, not a page: answer with a JSON problem, never with index.html.
+app.MapFallback("/api/{**slug}", (HttpContext http) => Results.Problem(
+    statusCode: StatusCodes.Status404NotFound,
+    title: "Not found",
+    detail: $"No API endpoint matches {http.Request.Method} {http.Request.Path}."))
+    .ExcludeFromDescription();
+
+// Every other unmatched path without a file extension is a client-side route (/login, /modules, ...):
+// hand back index.html and let the router take over.
+app.MapFallbackToFile("index.html", staticFiles).ExcludeFromDescription();
 
 app.Run();
 

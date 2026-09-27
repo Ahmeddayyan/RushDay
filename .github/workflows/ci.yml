@@ -14,6 +14,33 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Front end first: its build writes src/RushDay.Api/wwwroot, which the .NET integration tests serve.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/RushDay.Web/package-lock.json
+
+      - name: Front-end install
+        run: npm ci
+        working-directory: src/RushDay.Web
+
+      - name: Front-end lint
+        run: npm run lint
+        working-directory: src/RushDay.Web
+
+      - name: Front-end typecheck
+        run: npm run typecheck
+        working-directory: src/RushDay.Web
+
+      - name: Front-end tests
+        run: npm test
+        working-directory: src/RushDay.Web
+
+      - name: Front-end build
+        run: npm run build
+        working-directory: src/RushDay.Web
+
       - uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json

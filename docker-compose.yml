@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: rushday-postgres
+    environment:
+      POSTGRES_USER: rushday
+      POSTGRES_PASSWORD: rushday
+      POSTGRES_DB: rushday
+    ports:
+      - "5432:5432"
+    volumes:
+      - rushday-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rushday -d rushday"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  rushday-pgdata:

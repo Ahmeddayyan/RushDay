@@ -1,0 +1,27 @@
+# Render Blueprint: one free web service built from the Dockerfile.
+# The database is a free Neon PostgreSQL instance; its connection string is set in the Render dashboard.
+# autoDeploy is off on purpose: GitHub Actions deploys only after build and tests pass.
+services:
+  - type: web
+    name: rushday-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: ASPNETCORE_HTTP_PORTS
+        value: "8080"
+      - key: PORT
+        value: "8080"
+      - key: Database__MigrateOnStartup
+        value: "true"
+      - key: Database__SeedOnStartup
+        value: "true"
+      - key: Database__SeedStudentCount
+        value: "20000"
+      - key: ConnectionStrings__RushDay
+        sync: false

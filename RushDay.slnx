@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RushDay.Api/RushDay.Api.csproj" />
+    <Project Path="src/RushDay.Domain/RushDay.Domain.csproj" />
+    <Project Path="src/RushDay.Infrastructure/RushDay.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RushDay.IntegrationTests/RushDay.IntegrationTests.csproj" />
+    <Project Path="tests/RushDay.UnitTests/RushDay.UnitTests.csproj" />
+  </Folder>
+</Solution>

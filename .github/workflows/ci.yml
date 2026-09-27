@@ -1,4 +1,7 @@
-name: CI/CD
+name: CI
+
+# Render watches these checks: a push to main is deployed only when this workflow passes
+# (render.yaml sets autoDeployTrigger: checksPass).
 
 on:
   push:
@@ -36,20 +39,3 @@ jobs:
         with:
           name: test-results
           path: TestResults
-
-  deploy:
-    needs: build-and-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Trigger Render deploy
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-        run: |
-          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
-            echo "RENDER_DEPLOY_HOOK_URL secret is not set; skipping deploy."
-            exit 0
-          fi
-          curl --fail --silent --show-error --request POST "$RENDER_DEPLOY_HOOK_URL"
-          echo "Deploy triggered."

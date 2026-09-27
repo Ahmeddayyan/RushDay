@@ -39,9 +39,12 @@ if (seedCommand)
     return;
 }
 
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.MapOpenApi();
 app.MapHealthChecks("/health");
-app.MapGet("/", () => TypedResults.Ok(new
+app.MapGet("/api", () => TypedResults.Ok(new
 {
     name = "RushDay",
     story = "A university student portal built to fall over on results day, then fixed one measured step at a time.",

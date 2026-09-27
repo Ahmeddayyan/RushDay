@@ -53,10 +53,10 @@ Then:
 dotnet run --project src\RushDay.Api -c Release      # http://localhost:5080
 ```
 
-Open `src/RushDay.Api/RushDay.Api.http` or try:
+Open http://localhost:5080 for the dashboard UI, or use `src/RushDay.Api/RushDay.Api.http`, or try:
 
 ```
-GET  /                                   index with links
+GET  /api                                JSON index with links and the deployed commit
 GET  /students/S000001/dashboard
 GET  /modules
 GET  /modules/CS3099                     30 places, everyone wants it

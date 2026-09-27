@@ -45,6 +45,7 @@ app.MapGet("/", () => TypedResults.Ok(new
 {
     name = "RushDay",
     story = "A university student portal built to fall over on results day, then fixed one measured step at a time.",
+    commit = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT") ?? "local",
     links = new
     {
         health = "/health",

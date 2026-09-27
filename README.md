@@ -6,7 +6,7 @@ Every September the same thing happens: marks are published at 09:00, twenty tho
 dashboard in the same minute, and the portal collapses. RushDay reproduces that collapse on a laptop,
 measures it, and fixes it, with every decision and every number written down.
 
-Live demo: _URL goes here once deployed, see [docs/deployment.md](docs/deployment.md)_ (free tier, the
+Live demo: **https://rushday-api.onrender.com** (free tier, the
 first request after idle can take up to a minute).
 
 ## The story

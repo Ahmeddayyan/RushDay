@@ -82,7 +82,7 @@ describe('LoginPage', () => {
     // The guard bounced us to /login and remembered where we were heading.
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'))
 
-    await user.type(screen.getByLabelText('Student number or username'), 'S000001')
+    await user.type(await screen.findByLabelText('Student number or username'), 'S000001')
     await user.type(screen.getByLabelText('Password'), 'secret')
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
 

@@ -10,7 +10,8 @@ namespace RushDay.Infrastructure.Persistence.Migrations
     /// The one v1 migration (01-domain-and-data.md section 5). Generated with dotnet ef, then hand-edited so it is
     /// valid on the populated database: every NOT NULL column added to an existing table gets a migration-time
     /// default that is dropped afterwards unless the model keeps it, modules.department is derived from the code,
-    /// and modules.enrolled_count is reconciled from active enrolments before the application starts.
+    /// and audit_events is made append-only by a trigger. It contains no enrolled_count reconciliation: the count
+    /// is year-scoped and needs the academic_settings row, so the last startup backfill computes it.
     /// </summary>
     public partial class PortalAndIdentity : Migration
     {
@@ -246,7 +247,8 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                     full_name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
                     title = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false),
                     department = table.Column<string>(type: "character varying(8)", maxLength: 8, nullable: false),
-                    email = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true)
+                    email = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
+                    left_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -294,12 +296,16 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                     institution_name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
                     institution_short_name = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
                     time_zone = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                    current_semester = table.Column<int>(type: "integer", nullable: false),
+                    support_email = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
+                    support_url = table.Column<string>(type: "character varying(400)", maxLength: 400, nullable: true),
                     updated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     updated_by_user_id = table.Column<Guid>(type: "uuid", nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("pk_academic_settings", x => x.id);
+                    table.CheckConstraint("ck_academic_settings_current_semester", "current_semester IN (1, 2)");
                     table.CheckConstraint("ck_academic_settings_singleton", "id = 1");
                 });
 
@@ -427,12 +433,25 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                     module_id = table.Column<Guid>(type: "uuid", nullable: true),
                     details = table.Column<string>(type: "jsonb", nullable: true),
                     request_id = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
-                    ip_hash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true)
+                    ip_hash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    chain_hash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("pk_audit_events", x => x.id);
                 });
+
+            // Immutability is enforced by PostgreSQL, not by convention: the application role, a raw-SQL mistake or
+            // an injected statement cannot rewrite or delete the trail (01-domain-and-data.md section 3).
+            migrationBuilder.Sql("""
+                CREATE FUNCTION audit_events_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN RAISE EXCEPTION 'audit_events is append-only'; END $$;
+                """);
+
+            migrationBuilder.Sql("""
+                CREATE TRIGGER trg_audit_events_immutable BEFORE UPDATE OR DELETE ON audit_events
+                  FOR EACH ROW EXECUTE FUNCTION audit_events_immutable();
+                """);
 
             migrationBuilder.CreateIndex(
                 name: "ix_audit_events_action_occurred_at",
@@ -486,6 +505,12 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 maxLength: 256,
                 nullable: true);
 
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "left_at",
+                table: "students",
+                type: "timestamp with time zone",
+                nullable: true);
+
             // 4. modules. department is added with a default so the populated table migrates in one statement,
             //    filled from the code, and the default is dropped (the model carries none). enrolled_count and
             //    is_active keep their defaults (the model has HasDefaultValue for both).
@@ -537,7 +562,10 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 table: "modules",
                 sql: "enrolled_count >= 0");
 
-            // 5. enrolments. status keeps its default (model HasDefaultValue); source's default exists only here.
+            // 5. enrolments. status and source keep their defaults (model HasDefaultValue; the 'Seed' default lets
+            //    an insert by the v0 container during Render's deploy overlap succeed). academic_year's default
+            //    exists only here: every seeded row is a 2025/26 autumn enrolment; the v0 load-run rows on CS3099
+            //    are relabelled 2026/27 by backfill step 4.
             migrationBuilder.AddColumn<string>(
                 name: "status",
                 table: "enrolments",
@@ -554,7 +582,15 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 nullable: false,
                 defaultValue: "Seed");
 
-            migrationBuilder.Sql("ALTER TABLE enrolments ALTER COLUMN source DROP DEFAULT");
+            migrationBuilder.AddColumn<string>(
+                name: "academic_year",
+                table: "enrolments",
+                type: "character varying(9)",
+                maxLength: 9,
+                nullable: false,
+                defaultValue: "2025/26");
+
+            migrationBuilder.Sql("ALTER TABLE enrolments ALTER COLUMN academic_year DROP DEFAULT");
 
             migrationBuilder.AddColumn<DateTimeOffset>(
                 name: "withdrawn_at",
@@ -584,6 +620,11 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 columns: new[] { "module_id", "status" });
 
             migrationBuilder.CreateIndex(
+                name: "ix_enrolments_student_id_academic_year_status",
+                table: "enrolments",
+                columns: new[] { "student_id", "academic_year", "status" });
+
+            migrationBuilder.CreateIndex(
                 name: "ix_enrolments_created_by_user_id",
                 table: "enrolments",
                 column: "created_by_user_id");
@@ -598,14 +639,9 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 table: "enrolments",
                 sql: "status IN ('Active', 'Withdrawn')");
 
-            // Reconcile modules.enrolled_count from active enrolments (the SQL of backfill step 1). It belongs to
-            // step 4 but needs enrolments.status, so it runs as soon as that column exists: every existing row is
-            // 'Active' through the default, and the local database's oversold CS3099 gets its true count of 154.
-            migrationBuilder.Sql(Seeding.StartupBackfills.ReconcileEnrolledCountSql);
-            migrationBuilder.Sql(Seeding.StartupBackfills.ReconcileZeroEnrolledCountSql);
-
             // 6. grades. Every existing row is a published mark, so status defaults to 'Published' for the
-            //    migration only; updated_at defaults to now() for the migration only; version keeps its default.
+            //    migration only; updated_at defaults to now() for the migration only; outcome ('Mark') and
+            //    version (1) keep their defaults; mark becomes nullable (null iff outcome <> 'Mark').
             migrationBuilder.AlterColumn<DateTimeOffset>(
                 name: "published_at",
                 table: "grades",
@@ -613,6 +649,22 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 nullable: true,
                 oldClrType: typeof(DateTimeOffset),
                 oldType: "timestamp with time zone");
+
+            migrationBuilder.AlterColumn<int>(
+                name: "mark",
+                table: "grades",
+                type: "integer",
+                nullable: true,
+                oldClrType: typeof(int),
+                oldType: "integer");
+
+            migrationBuilder.AddColumn<string>(
+                name: "outcome",
+                table: "grades",
+                type: "character varying(16)",
+                maxLength: 16,
+                nullable: false,
+                defaultValue: "Mark");
 
             migrationBuilder.AddColumn<string>(
                 name: "status",
@@ -658,6 +710,12 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 nullable: false,
                 defaultValue: 1);
 
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "corrected_at",
+                table: "grades",
+                type: "timestamp with time zone",
+                nullable: true);
+
             migrationBuilder.DropIndex(
                 name: "ix_grades_module_id",
                 table: "grades");
@@ -683,19 +741,29 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 column: "publication_id");
 
             migrationBuilder.AddCheckConstraint(
+                name: "ck_grades_status",
+                table: "grades",
+                sql: "status IN ('Draft', 'Submitted', 'Published')");
+
+            migrationBuilder.AddCheckConstraint(
+                name: "ck_grades_outcome",
+                table: "grades",
+                sql: "outcome IN ('Mark', 'Absent', 'Deferred')");
+
+            migrationBuilder.AddCheckConstraint(
                 name: "ck_grades_mark_range",
                 table: "grades",
-                sql: "mark >= 0 AND mark <= 100");
+                sql: "mark IS NULL OR (mark >= 0 AND mark <= 100)");
+
+            migrationBuilder.AddCheckConstraint(
+                name: "ck_grades_mark_outcome",
+                table: "grades",
+                sql: "(outcome = 'Mark') = (mark IS NOT NULL)");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_grades_published_has_instant",
                 table: "grades",
                 sql: "status <> 'Published' OR published_at IS NOT NULL");
-
-            migrationBuilder.AddCheckConstraint(
-                name: "ck_grades_status",
-                table: "grades",
-                sql: "status IN ('Draft', 'Submitted', 'Published')");
 
             // 7. Foreign keys. Users are never deleted, so everything that points at users is RESTRICT;
             //    child rows of modules and lecturers cascade as the v0 tables already do.
@@ -822,11 +890,14 @@ namespace RushDay.Infrastructure.Persistence.Migrations
             migrationBuilder.DropForeignKey(name: "fk_users_lecturers_lecturer_id", table: "users");
             migrationBuilder.DropForeignKey(name: "fk_users_students_student_id", table: "users");
 
-            // 6. grades. Existing v0 rows keep their published_at; only rows that gained a null instant
-            //    (drafts and submissions created after the upgrade) are stamped before NOT NULL returns.
-            migrationBuilder.DropCheckConstraint(name: "ck_grades_status", table: "grades");
+            // 6. grades. Existing v0 rows keep their published_at and mark; only rows that gained a null instant or
+            //    a null mark (drafts, submissions, absences and deferrals created after the upgrade) are stamped
+            //    before NOT NULL returns.
             migrationBuilder.DropCheckConstraint(name: "ck_grades_published_has_instant", table: "grades");
+            migrationBuilder.DropCheckConstraint(name: "ck_grades_mark_outcome", table: "grades");
             migrationBuilder.DropCheckConstraint(name: "ck_grades_mark_range", table: "grades");
+            migrationBuilder.DropCheckConstraint(name: "ck_grades_outcome", table: "grades");
+            migrationBuilder.DropCheckConstraint(name: "ck_grades_status", table: "grades");
             migrationBuilder.DropIndex(name: "ix_grades_publication_id", table: "grades");
             migrationBuilder.DropIndex(name: "ix_grades_entered_by_user_id", table: "grades");
             migrationBuilder.DropIndex(name: "ix_grades_module_id_status", table: "grades");
@@ -837,12 +908,14 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 table: "grades",
                 column: "module_id");
 
+            migrationBuilder.DropColumn(name: "corrected_at", table: "grades");
             migrationBuilder.DropColumn(name: "version", table: "grades");
             migrationBuilder.DropColumn(name: "updated_at", table: "grades");
             migrationBuilder.DropColumn(name: "submitted_at", table: "grades");
             migrationBuilder.DropColumn(name: "entered_by_user_id", table: "grades");
             migrationBuilder.DropColumn(name: "publication_id", table: "grades");
             migrationBuilder.DropColumn(name: "status", table: "grades");
+            migrationBuilder.DropColumn(name: "outcome", table: "grades");
 
             migrationBuilder.Sql("UPDATE grades SET published_at = now() WHERE published_at IS NULL");
 
@@ -855,10 +928,22 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 oldType: "timestamp with time zone",
                 oldNullable: true);
 
+            migrationBuilder.Sql("UPDATE grades SET mark = 0 WHERE mark IS NULL");
+
+            migrationBuilder.AlterColumn<int>(
+                name: "mark",
+                table: "grades",
+                type: "integer",
+                nullable: false,
+                oldClrType: typeof(int),
+                oldType: "integer",
+                oldNullable: true);
+
             // 5. enrolments
             migrationBuilder.DropCheckConstraint(name: "ck_enrolments_status", table: "enrolments");
             migrationBuilder.DropCheckConstraint(name: "ck_enrolments_source", table: "enrolments");
             migrationBuilder.DropIndex(name: "ix_enrolments_created_by_user_id", table: "enrolments");
+            migrationBuilder.DropIndex(name: "ix_enrolments_student_id_academic_year_status", table: "enrolments");
             migrationBuilder.DropIndex(name: "ix_enrolments_module_id_status", table: "enrolments");
 
             migrationBuilder.CreateIndex(
@@ -869,6 +954,7 @@ namespace RushDay.Infrastructure.Persistence.Migrations
             migrationBuilder.DropColumn(name: "updated_at", table: "enrolments");
             migrationBuilder.DropColumn(name: "created_by_user_id", table: "enrolments");
             migrationBuilder.DropColumn(name: "withdrawn_at", table: "enrolments");
+            migrationBuilder.DropColumn(name: "academic_year", table: "enrolments");
             migrationBuilder.DropColumn(name: "source", table: "enrolments");
             migrationBuilder.DropColumn(name: "status", table: "enrolments");
 
@@ -882,10 +968,13 @@ namespace RushDay.Infrastructure.Persistence.Migrations
             migrationBuilder.DropColumn(name: "department", table: "modules");
 
             // 3. students
+            migrationBuilder.DropColumn(name: "left_at", table: "students");
             migrationBuilder.DropColumn(name: "email", table: "students");
 
-            // 2. New domain tables
+            // 2. New domain tables; the trigger and its function go before the table they guard.
             migrationBuilder.DropTable(name: "data_backfills");
+            migrationBuilder.Sql("DROP TRIGGER IF EXISTS trg_audit_events_immutable ON audit_events;");
+            migrationBuilder.Sql("DROP FUNCTION IF EXISTS audit_events_immutable();");
             migrationBuilder.DropTable(name: "audit_events");
             migrationBuilder.DropTable(name: "announcements");
             migrationBuilder.DropTable(name: "results_publications");

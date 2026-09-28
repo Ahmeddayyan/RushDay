@@ -9,4 +9,7 @@ public sealed class Lecturer
     public required string Title { get; set; }
     public required string Department { get; set; }
     public string? Email { get; set; }
+
+    /// <summary>Set when an administrator marks the lecturer as having left; existing assignments stay, new ones are refused.</summary>
+    public DateTimeOffset? LeftAt { get; set; }
 }

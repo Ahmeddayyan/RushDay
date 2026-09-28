@@ -105,9 +105,84 @@ public sealed class RushDayPasswordValidatorTests
     }
 
     [Fact]
-    public void Blocklist_holds_at_least_sixty_entries_of_twelve_or_more_characters()
+    public void Embedded_blocklist_loads_at_least_a_thousand_entries_of_twelve_or_more_characters()
     {
-        Assert.True(BlockedPasswords.Set.Count >= 60);
+        Assert.True(BlockedPasswords.Set.Count >= 1_000, $"only {BlockedPasswords.Set.Count} entries loaded");
+        Assert.True(BlockedPasswords.Set.Count <= 10_000);
         Assert.All(BlockedPasswords.Set, p => Assert.True(p.Length >= 12, $"'{p}' is shorter than the minimum length and could never be chosen"));
+    }
+
+    [Fact]
+    public void Embedded_blocklist_keeps_the_hand_written_entries_and_the_seclists_ones()
+    {
+        // The cast picks one Assert.Contains overload: FrozenSet implements both ISet and IReadOnlySet.
+        IReadOnlySet<string> set = BlockedPasswords.Set;
+        Assert.Contains("lecturer1234", set);
+        Assert.Contains("qwertyqwerty", set);
+        Assert.Contains("1q2w3e4r5t6y", set);
+    }
+
+    [Theory]
+    [InlineData("password1234")]
+    [InlineData("PASSWORD1234")]
+    [InlineData("QwErTyQwErTy")]
+    public void Check_finds_a_blocklisted_entry_case_insensitively(string password)
+    {
+        var codes = RushDayPasswordValidator.Check("S000001", password);
+
+        Assert.Contains(RushDayPasswordValidator.BlockedCode, codes);
+    }
+
+    [Fact]
+    public void Check_rejects_eleven_characters()
+    {
+        var codes = RushDayPasswordValidator.Check("admin", "abcdefghijk");
+
+        Assert.Contains(RushDayPasswordValidator.TooShortCode, codes);
+    }
+
+    [Fact]
+    public void Check_rejects_one_hundred_and_twenty_nine_characters()
+    {
+        var password = string.Concat(Enumerable.Range(0, 129).Select(i => (char)('a' + (i % 26))));
+        Assert.Equal(129, password.Length);
+
+        var codes = RushDayPasswordValidator.Check("admin", password);
+
+        Assert.Contains(RushDayPasswordValidator.TooLongCode, codes);
+    }
+
+    [Fact]
+    public void Check_rejects_three_distinct_characters()
+    {
+        var codes = RushDayPasswordValidator.Check("admin", "abcabcabcabcabc");
+
+        Assert.Contains(RushDayPasswordValidator.TooFewUniqueCharsCode, codes);
+    }
+
+    [Fact]
+    public void Check_rejects_the_username_and_the_product_name()
+    {
+        var codes = RushDayPasswordValidator.Check("root", "my ROOT rushday key");
+
+        Assert.Contains(RushDayPasswordValidator.ContainsUsernameCode, codes);
+        Assert.Contains(RushDayPasswordValidator.ContainsProductNameCode, codes);
+    }
+
+    [Theory]
+    [InlineData(RushDayPasswordValidator.MinimumLength)]
+    [InlineData(RushDayPasswordValidator.MaximumLength)]
+    public void Check_accepts_the_length_boundaries(int length)
+    {
+        // Four distinct characters, no dictionary word: "abcdefghijkl" itself is on the blocklist.
+        var password = string.Concat(Enumerable.Range(0, length).Select(i => "Kq7!"[i % 4]));
+
+        Assert.Empty(RushDayPasswordValidator.Check("admin", password));
+    }
+
+    [Fact]
+    public void Check_accepts_a_good_passphrase()
+    {
+        Assert.Empty(RushDayPasswordValidator.Check("admin", "correct horse battery staple"));
     }
 }

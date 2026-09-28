@@ -17,6 +17,19 @@ public sealed class ClassificationTests
         Assert.Equal(expected, Classification.FromAverage(average));
     }
 
+    [Theory]
+    [InlineData(100, "First")]
+    [InlineData(70, "First")]
+    [InlineData(69, "Upper Second (2:1)")]
+    [InlineData(50, "Lower Second (2:2)")]
+    [InlineData(40, "Third")]
+    [InlineData(39, "Fail")]
+    [InlineData(0, "Fail")]
+    public void Band_is_the_label_of_one_mark(int mark, string expected)
+    {
+        Assert.Equal(expected, Classification.Band(mark));
+    }
+
     [Fact]
     public void Weighted_average_weights_marks_by_credits()
     {
@@ -32,5 +45,35 @@ public sealed class ClassificationTests
     public void Weighted_average_is_null_when_nothing_is_graded()
     {
         Assert.Null(Classification.WeightedAverage([]));
+    }
+
+    [Fact]
+    public void Graded_keeps_only_mark_outcomes()
+    {
+        var graded = Classification.Graded(
+        [
+            (GradeOutcome.Mark, 80, 30),
+            (GradeOutcome.Absent, null, 15),
+            (GradeOutcome.Deferred, null, 15),
+            (GradeOutcome.Mark, 50, 15),
+        ]);
+
+        Assert.Equal([(80, 30), (50, 15)], graded);
+        Assert.Equal(70.0, Classification.WeightedAverage(graded)!.Value, precision: 5);
+    }
+
+    [Fact]
+    public void Graded_is_empty_when_every_outcome_is_an_absence_or_deferral()
+    {
+        var graded = Classification.Graded([(GradeOutcome.Absent, null, 15), (GradeOutcome.Deferred, null, 15)]);
+
+        Assert.Empty(graded);
+        Assert.Null(Classification.WeightedAverage(graded));
+    }
+
+    [Fact]
+    public void Graded_throws_when_results_are_null()
+    {
+        Assert.Throws<ArgumentNullException>(() => Classification.Graded(null!));
     }
 }

@@ -1,8 +1,9 @@
 namespace RushDay.Domain.Audit;
 
 /// <summary>
-/// Append-only record of who changed what. The application never updates or deletes these rows.
-/// Actor fields are null for startup steps; the denormalised student and module ids exist for filtering.
+/// Append-only record of who changed what. The application never updates or deletes these rows, and the
+/// database refuses to (trigger trg_audit_events_immutable). Actor fields are null for startup steps; the
+/// denormalised student and module ids exist for filtering.
 /// </summary>
 public sealed class AuditEvent
 {
@@ -22,4 +23,7 @@ public sealed class AuditEvent
 
     public string? RequestId { get; init; }
     public string? IpHash { get; init; }
+
+    /// <summary>Should: sha256 chain over the previous row for tamper evidence. Always null in v1.</summary>
+    public string? ChainHash { get; init; }
 }

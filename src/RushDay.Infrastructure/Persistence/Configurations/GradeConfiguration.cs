@@ -15,11 +15,14 @@ internal sealed class GradeConfiguration : IEntityTypeConfiguration<Grade>
         builder.ToTable("grades", table =>
         {
             table.HasCheckConstraint("ck_grades_status", "status IN ('Draft', 'Submitted', 'Published')");
-            table.HasCheckConstraint("ck_grades_mark_range", "mark >= 0 AND mark <= 100");
+            table.HasCheckConstraint("ck_grades_outcome", "outcome IN ('Mark', 'Absent', 'Deferred')");
+            table.HasCheckConstraint("ck_grades_mark_range", "mark IS NULL OR (mark >= 0 AND mark <= 100)");
+            table.HasCheckConstraint("ck_grades_mark_outcome", "(outcome = 'Mark') = (mark IS NOT NULL)");
             table.HasCheckConstraint("ck_grades_published_has_instant", "status <> 'Published' OR published_at IS NOT NULL");
         });
 
         builder.HasKey(g => g.Id);
+        builder.Property(g => g.Outcome).HasConversion<string>().HasMaxLength(16).IsRequired().HasDefaultValue(GradeOutcome.Mark);
         builder.Property(g => g.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
         builder.Property(g => g.Version).HasDefaultValue(1);
 

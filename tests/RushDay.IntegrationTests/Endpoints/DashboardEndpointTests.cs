@@ -12,12 +12,13 @@ public sealed class DashboardEndpointTests(RushDayApiFactory factory)
     {
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/students/S000001/dashboard");
+        // S000005 is a year-2 student: year-1 students also carry the demo cohort's CS3001 enrolment (backfill step 12).
+        var response = await client.GetAsync("/students/S000005/dashboard");
 
         response.EnsureSuccessStatusCode();
         var dashboard = await response.Content.ReadFromJsonAsync<DashboardResponse>();
         Assert.NotNull(dashboard);
-        Assert.Equal("S000001", dashboard.StudentNumber);
+        Assert.Equal("S000005", dashboard.StudentNumber);
         Assert.Equal(RushDayApiFactory.SeedOptions.AutumnModulesPerStudent, dashboard.Modules.Count);
         Assert.Equal(dashboard.Modules.Count, dashboard.Results.Count);
         Assert.NotNull(dashboard.WeightedAverage);

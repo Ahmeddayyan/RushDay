@@ -12,6 +12,10 @@ public sealed class Enrolment
     public DateTimeOffset EnrolledAt { get; set; }
     public EnrolmentStatus Status { get; set; }
     public EnrolmentSource Source { get; set; }
+
+    /// <summary>The academic year label (<c>2026/27</c>) stamped on insert and on every reactivation (D28).</summary>
+    public required string AcademicYear { get; set; }
+
     public DateTimeOffset? WithdrawnAt { get; set; }
 
     /// <summary>Null for seed rows and for self-enrolments; the audit row names the actor.</summary>

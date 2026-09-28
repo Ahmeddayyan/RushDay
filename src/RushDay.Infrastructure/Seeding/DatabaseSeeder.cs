@@ -18,6 +18,9 @@ public static class DatabaseSeeder
     public const string HotModuleCode = "CS3099";
     public const int HotModuleCapacity = 30;
 
+    /// <summary>Every seeded row is a completed 2025/26 autumn enrolment with a published mark.</summary>
+    public const string SeedAcademicYear = "2025/26";
+
     private const int ModuleCredits = 15;
     private const int AutumnCapacity = 1_500;
     private const int SpringCapacity = 300;
@@ -206,6 +209,7 @@ public static class DatabaseSeeder
                     EnrolledAt = termStart.AddMinutes(random.Next(0, 60 * 24 * 7)),
                     Status = EnrolmentStatus.Active,
                     Source = EnrolmentSource.Seed,
+                    AcademicYear = SeedAcademicYear,
                 });
             }
         }
@@ -224,6 +228,7 @@ public static class DatabaseSeeder
                 StudentId = enrolment.StudentId,
                 ModuleId = enrolment.ModuleId,
                 Mark = Math.Clamp((int)Math.Round(NextGaussian(random, mean: 62, standardDeviation: 12)), 0, 100),
+                Outcome = GradeOutcome.Mark,
                 Status = GradeStatus.Published,
                 PublishedAt = options.ResultsDay,
                 UpdatedAt = options.ResultsDay,

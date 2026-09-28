@@ -28,7 +28,9 @@ if (seedCommand || databaseOptions.MigrateOnStartup)
     await db.Database.MigrateAsync();
     app.Logger.LogInformation("Database migrated.");
 
-    if (seedCommand || databaseOptions.SeedOnStartup)
+    // The seeder only runs for the demo (D29): a customer database starts with roles, settings, the bootstrap
+    // administrator and nothing synthetic.
+    if (seedCommand || (databaseOptions.SeedOnStartup && builder.Configuration.GetValue<bool>("Demo:Enabled")))
     {
         await DatabaseSeeder.SeedAsync(db, new SeedOptions
         {
@@ -44,6 +46,7 @@ if (seedCommand || databaseOptions.MigrateOnStartup)
         var backfillOptions = new StartupBackfillOptions
         {
             DemoEnabled = builder.Configuration.GetValue<bool>("Demo:Enabled"),
+            BootstrapAdminUsername = builder.Configuration["Bootstrap:AdminUsername"] ?? "admin",
             BootstrapAdminPassword = builder.Configuration["Bootstrap:AdminPassword"],
             InstitutionName = branding["InstitutionName"] ?? StartupBackfillOptions.DefaultInstitutionName,
             InstitutionShortName = branding["InstitutionShortName"] ?? StartupBackfillOptions.DefaultInstitutionShortName,

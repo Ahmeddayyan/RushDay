@@ -13,10 +13,38 @@ public sealed partial class AuditActionsTests
             .Select(f => (string)f.GetRawConstantValue()!)
             .ToList();
 
+    /// <summary>The 48 actions of 03-security.md section 7, verbatim.</summary>
+    private static readonly string[] Catalogue =
+    [
+        "auth.locked_out", "auth.password_changed",
+        "account.mfa_setup_started", "account.mfa_enabled",
+        "enrolment.created", "enrolment.withdrawn", "enrolment.admin_created", "enrolment.admin_withdrawn",
+        "grade.entered", "grade.changed", "grade.corrected",
+        "module.marks_submitted", "module.returned_to_draft",
+        "results.published", "results.rescheduled", "results.cancelled", "results.unpublished",
+        "announcement.created", "announcement.updated", "announcement.deleted",
+        "account.provisioned",
+        "account.locked", "account.unlocked", "account.disabled", "account.enabled", "account.password_reset", "account.mfa_reset",
+        "settings.changed",
+        "window.created", "window.updated", "window.deleted",
+        "module.created", "module.updated",
+        "module.lecturers_set",
+        "module.trimmed",
+        "student.created", "student.updated", "student.left",
+        "student.viewed",
+        "student.exported", "student.exported_self",
+        "lecturer.created", "lecturer.updated", "lecturer.left",
+        "audit.exported",
+        "ops.reconciled",
+        "system.demo_reset",
+        "system.demo_accounts_disabled",
+    ];
+
     [Fact]
-    public void Catalogue_is_not_empty()
+    public void Catalogue_has_forty_eight_actions()
     {
-        Assert.NotEmpty(Actions());
+        Assert.Equal(48, Catalogue.Length);
+        Assert.Equal(48, Actions().Count);
     }
 
     [Fact]
@@ -40,22 +68,49 @@ public sealed partial class AuditActionsTests
     [Fact]
     public void Catalogue_matches_the_security_specification()
     {
-        string[] expected =
-        [
-            "auth.locked_out", "auth.password_changed",
-            "enrolment.created", "enrolment.withdrawn", "enrolment.admin_created", "enrolment.admin_withdrawn",
-            "grade.entered", "grade.changed",
-            "module.marks_submitted", "module.returned_to_draft", "module.created", "module.updated", "module.lecturers_set",
-            "results.published", "results.rescheduled",
-            "announcement.created", "announcement.updated", "announcement.deleted",
-            "account.provisioned", "account.locked", "account.unlocked", "account.disabled", "account.enabled", "account.password_reset",
-            "settings.changed",
-            "window.created", "window.updated", "window.deleted",
-            "student.created", "lecturer.created",
-            "ops.reconciled",
-        ];
+        Assert.Equal(Catalogue.Order(StringComparer.Ordinal), Actions().Order(StringComparer.Ordinal));
+    }
 
-        Assert.Equal(expected.Order(StringComparer.Ordinal), Actions().Order(StringComparer.Ordinal));
+    [Fact]
+    public void Every_action_maps_to_a_listed_subject()
+    {
+        Assert.All(Actions(), action => Assert.Contains(AuditActions.SubjectOf(action), AuditSubjects.All));
+    }
+
+    [Theory]
+    [InlineData("auth.locked_out", AuditSubjects.Account)]
+    [InlineData("account.provisioned", AuditSubjects.Account)]
+    [InlineData("enrolment.created", AuditSubjects.Enrolment)]
+    [InlineData("grade.corrected", AuditSubjects.Grade)]
+    [InlineData("module.trimmed", AuditSubjects.Module)]
+    [InlineData("results.unpublished", AuditSubjects.Publication)]
+    [InlineData("announcement.deleted", AuditSubjects.Announcement)]
+    [InlineData("settings.changed", AuditSubjects.Settings)]
+    [InlineData("window.updated", AuditSubjects.Window)]
+    [InlineData("student.exported_self", AuditSubjects.Student)]
+    [InlineData("lecturer.left", AuditSubjects.Lecturer)]
+    [InlineData("audit.exported", AuditSubjects.System)]
+    [InlineData("ops.reconciled", AuditSubjects.System)]
+    [InlineData("system.demo_accounts_disabled", AuditSubjects.System)]
+    public void Subject_of_follows_the_prefix_table(string action, string expected)
+    {
+        Assert.Equal(expected, AuditActions.SubjectOf(action));
+    }
+
+    [Theory]
+    [InlineData("nothing.here")]
+    [InlineData("grade")]
+    public void Subject_of_throws_for_an_unknown_action(string action)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => AuditActions.SubjectOf(action));
+    }
+
+    [Fact]
+    public void Subjects_are_unique_and_fit_the_column()
+    {
+        Assert.Equal(11, AuditSubjects.All.Count);
+        Assert.Equal(AuditSubjects.All.Count, AuditSubjects.All.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(AuditSubjects.All, subject => Assert.True(subject.Length <= 32));
     }
 
     [GeneratedRegex("^[a-z]+\\.[a-z_]+$")]

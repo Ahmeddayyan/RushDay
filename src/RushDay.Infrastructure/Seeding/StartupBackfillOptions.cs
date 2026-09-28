@@ -10,7 +10,10 @@ public sealed record StartupBackfillOptions
     /// <summary><c>Demo:Enabled</c>. Off by default; a customer deployment never turns it on.</summary>
     public bool DemoEnabled { get; init; }
 
-    /// <summary><c>Bootstrap:AdminPassword</c>, consumed only when no Admin exists.</summary>
+    /// <summary><c>Bootstrap:AdminUsername</c>: a customer who evaluated with demo mode first sets another name, because <c>admin</c> is then a disabled demo account.</summary>
+    public string BootstrapAdminUsername { get; init; } = "admin";
+
+    /// <summary><c>Bootstrap:AdminPassword</c>, consumed only when no usable Admin exists.</summary>
     public string? BootstrapAdminPassword { get; init; }
 
     public string InstitutionName { get; init; } = DefaultInstitutionName;

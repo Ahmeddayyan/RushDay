@@ -6,7 +6,8 @@ namespace RushDay.Infrastructure.Persistence.Configurations;
 
 /// <summary>
 /// Append-only. No foreign keys on purpose: an audit row must outlive the module or user it names,
-/// and the application has no code path that updates or deletes these rows.
+/// and the application has no code path that updates or deletes these rows; the migration adds the
+/// trg_audit_events_immutable trigger so the database refuses them too.
 /// </summary>
 internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEvent>
 {
@@ -21,6 +22,7 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEv
         builder.Property(a => a.Details).HasColumnType("jsonb");
         builder.Property(a => a.RequestId).HasMaxLength(64);
         builder.Property(a => a.IpHash).HasMaxLength(64);
+        builder.Property(a => a.ChainHash).HasMaxLength(64);
 
         builder.HasIndex(a => a.OccurredAt).IsDescending();
         builder.HasIndex(a => new { a.StudentId, a.OccurredAt }).IsDescending(false, true);

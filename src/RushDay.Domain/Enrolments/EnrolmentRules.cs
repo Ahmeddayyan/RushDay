@@ -13,14 +13,16 @@ public static class EnrolmentRules
     /// <summary>
     /// Decides in a fixed order: already enrolled, window closed, credit limit, module full, accepted.
     /// The cheap and student-specific reasons come first so a rejected student hears the reason that
-    /// would still apply after a place frees up.
+    /// would still apply after a place frees up. The admin override passes <c>windowOpen: true</c> and
+    /// <c>ignoreCreditLimit: true</c>; capacity is still respected unless the service forces it.
     /// </summary>
     public static EnrolmentDecision Evaluate(
         Module module,
         int currentEnrolledCount,
         int studentCreditsInSemester,
         bool alreadyEnrolled,
-        bool windowOpen)
+        bool windowOpen,
+        bool ignoreCreditLimit = false)
     {
         ArgumentNullException.ThrowIfNull(module);
 
@@ -34,7 +36,7 @@ public static class EnrolmentRules
             return EnrolmentDecision.WindowClosed;
         }
 
-        if (studentCreditsInSemester + module.Credits > MaxCreditsPerSemester)
+        if (!ignoreCreditLimit && studentCreditsInSemester + module.Credits > MaxCreditsPerSemester)
         {
             return EnrolmentDecision.CreditLimitExceeded;
         }

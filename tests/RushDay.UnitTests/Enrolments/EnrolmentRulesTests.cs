@@ -75,6 +75,38 @@ public sealed class EnrolmentRulesTests
         Assert.Equal(expected, decision);
     }
 
+    /// <summary>The admin override (windowOpen: true, ignoreCreditLimit: true) skips the credit check only.</summary>
+    [Fact]
+    public void Ignoring_the_credit_limit_accepts_an_over_budget_student_when_places_remain()
+    {
+        var decision = EnrolmentRules.Evaluate(HotModule(capacity: 30), currentEnrolledCount: 29, studentCreditsInSemester: 60, alreadyEnrolled: false, windowOpen: true, ignoreCreditLimit: true);
+
+        Assert.Equal(EnrolmentDecision.Accepted, decision);
+    }
+
+    [Fact]
+    public void Ignoring_the_credit_limit_still_reports_a_full_module()
+    {
+        var decision = EnrolmentRules.Evaluate(HotModule(capacity: 30), currentEnrolledCount: 30, studentCreditsInSemester: 60, alreadyEnrolled: false, windowOpen: true, ignoreCreditLimit: true);
+
+        Assert.Equal(EnrolmentDecision.ModuleFull, decision);
+    }
+
+    [Fact]
+    public void Ignoring_the_credit_limit_does_not_bypass_already_enrolled_or_a_closed_window()
+    {
+        Assert.Equal(EnrolmentDecision.AlreadyEnrolled, EnrolmentRules.Evaluate(HotModule(), 0, 60, alreadyEnrolled: true, windowOpen: true, ignoreCreditLimit: true));
+        Assert.Equal(EnrolmentDecision.WindowClosed, EnrolmentRules.Evaluate(HotModule(), 0, 60, alreadyEnrolled: false, windowOpen: false, ignoreCreditLimit: true));
+    }
+
+    [Fact]
+    public void The_credit_limit_applies_by_default()
+    {
+        var decision = EnrolmentRules.Evaluate(HotModule(capacity: 30), currentEnrolledCount: 0, studentCreditsInSemester: 60, alreadyEnrolled: false, windowOpen: true);
+
+        Assert.Equal(EnrolmentDecision.CreditLimitExceeded, decision);
+    }
+
     [Fact]
     public void Max_credits_per_semester_is_sixty()
     {

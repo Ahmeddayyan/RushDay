@@ -1,85 +1,36 @@
+using System.Collections.Frozen;
+using System.Reflection;
+
 namespace RushDay.Infrastructure.Identity;
 
 /// <summary>
-/// Common passwords of twelve or more characters that pass the length rule yet are the first guesses in any
-/// credential-stuffing list. Compared case-insensitively.
+/// Common breached passwords of twelve or more characters (01-domain-and-data.md section 8): they pass the length
+/// rule yet are the first guesses in any credential-stuffing list. Loaded once from the embedded resource
+/// <c>Identity/blocked-passwords.txt</c> (SecLists' top-1,000,000 list filtered to 12+ characters, in list order,
+/// merged with the hand-written entries S1 shipped; one per line, lower-case). Compared case-insensitively.
 /// </summary>
 public static class BlockedPasswords
 {
-    public static IReadOnlySet<string> Set { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    public const string ResourceName = "RushDay.Infrastructure.Identity.blocked-passwords.txt";
+
+    public static FrozenSet<string> Set { get; } = Load();
+
+    private static FrozenSet<string> Load()
     {
-        "password1234",
-        "password12345",
-        "password123456",
-        "password1234567",
-        "passwordpassword",
-        "password2025",
-        "password2026",
-        "password!234",
-        "passw0rd1234",
-        "p@ssw0rd1234",
-        "p@ssword1234",
-        "123456789012",
-        "1234567890123",
-        "12345678901234",
-        "123456789000",
-        "111111111111",
-        "000000000000",
-        "123123123123",
-        "121212121212",
-        "987654321098",
-        "1234567890ab",
-        "qwertyuiop123",
-        "qwertyuiopasdf",
-        "qwertyuiop12",
-        "qwerty123456",
-        "qwerty1234567",
-        "1q2w3e4r5t6y",
-        "1qaz2wsx3edc",
-        "asdfghjkl123",
-        "zxcvbnm12345",
-        "abcdefghijkl",
-        "abcd12345678",
-        "abc123456789",
-        "iloveyou1234",
-        "iloveyou12345",
-        "administrator",
-        "admin12345678",
-        "adminadmin12",
-        "letmein12345",
-        "letmeinplease",
-        "welcome12345",
-        "welcome123456",
-        "welcome2026!",
-        "changeme1234",
-        "changeme2026",
-        "temppassword",
-        "temporary123",
-        "defaultpass1",
-        "mypassword12",
-        "newpassword1",
-        "secretsecret",
-        "trustno1trustno1",
-        "football1234",
-        "baseball1234",
-        "basketball12",
-        "sunshine1234",
-        "princess1234",
-        "superman1234",
-        "dragon123456",
-        "monkey123456",
-        "shadow123456",
-        "master123456",
-        "michael12345",
-        "jennifer1234",
-        "computer1234",
-        "internet1234",
-        "university12",
-        "universityof",
-        "student12345",
-        "students1234",
-        "lecturer1234",
-        "whateverwhat",
-        "opensesame12",
-    };
+        using var stream = typeof(BlockedPasswords).Assembly.GetManifestResourceStream(ResourceName)
+            ?? throw new InvalidOperationException($"Embedded resource '{ResourceName}' is missing from {typeof(BlockedPasswords).Assembly.GetName().Name}.");
+        using var reader = new StreamReader(stream);
+
+        var entries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (reader.ReadLine() is { } line)
+        {
+            var entry = line.Trim();
+            if (entry.Length > 0)
+            {
+                entries.Add(entry);
+            }
+        }
+
+        return entries.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+    }
 }

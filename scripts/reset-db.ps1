@@ -13,4 +13,4 @@ if ($usingDocker) {
     & $psql.FullName -U postgres -h localhost -v ON_ERROR_STOP=1 -c "CREATE DATABASE rushday OWNER rushday"
 }
 
-dotnet run --project src/RushDay.Api -- --migrate-and-seed
+scripts/run-api.ps1 -Args "--migrate-and-seed"

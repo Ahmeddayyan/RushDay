@@ -27,6 +27,8 @@ public static class DependencyInjection
     /// <summary>
     /// Applies the pool, timeout and hygiene settings of 04-performance-and-ops.md section 5, each only when the
     /// incoming string does not already set it, so an operator can override any of them in the environment.
+    /// No minimum pool and no keepalive by default: two always-open connections pinging every 30 s would keep
+    /// Neon's compute from auto-suspending; Development may set <c>Keepalive=30</c> for long k6 runs.
     /// </summary>
     public static string BuildConnectionString(string connectionString, int maxPoolSize)
     {
@@ -35,12 +37,10 @@ public static class DependencyInjection
         var builder = new NpgsqlConnectionStringBuilder(connectionString);
 
         SetIfAbsent(builder, "Maximum Pool Size", b => b.MaxPoolSize = maxPoolSize);
-        SetIfAbsent(builder, "Minimum Pool Size", b => b.MinPoolSize = 2);
         SetIfAbsent(builder, "Timeout", b => b.Timeout = 5);
         SetIfAbsent(builder, "Command Timeout", b => b.CommandTimeout = 10);
         SetIfAbsent(builder, "Connection Idle Lifetime", b => b.ConnectionIdleLifetime = 60);
         SetIfAbsent(builder, "Connection Pruning Interval", b => b.ConnectionPruningInterval = 10);
-        SetIfAbsent(builder, "Keepalive", b => b.KeepAlive = 30);
         SetIfAbsent(builder, "Application Name", b => b.ApplicationName = "rushday-api");
         SetIfAbsent(builder, "Include Error Detail", b => b.IncludeErrorDetail = false);
 
@@ -54,7 +54,8 @@ public static class DependencyInjection
 
     private static void SetIfAbsent(NpgsqlConnectionStringBuilder builder, string canonicalKeyword, Action<NpgsqlConnectionStringBuilder> apply)
     {
-        // ShouldSerialize reports whether the keyword was explicitly present (ContainsKey is true for every known keyword).
+        // Npgsql stores every alias under its canonical keyword, so ShouldSerialize reports whether the setting was
+        // explicitly present in any spelling (ContainsKey is true for every known keyword and cannot be used).
         if (!builder.ShouldSerialize(canonicalKeyword))
         {
             apply(builder);

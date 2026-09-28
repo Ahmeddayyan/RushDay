@@ -5,7 +5,9 @@ using Microsoft.EntityFrameworkCore;
 using RushDay.Api.Contracts;
 using RushDay.Domain.Enrolments;
 using RushDay.Domain.Grades;
+using RushDay.Domain.Settings;
 using RushDay.Infrastructure.Persistence;
+using RushDay.Infrastructure.Seeding;
 
 namespace RushDay.Api.Endpoints;
 
@@ -71,7 +73,10 @@ public static class StudentEndpoints
             var module = await db.Modules.AsNoTracking()
                 .SingleAsync(m => m.Id == grade.ModuleId, cancellationToken);
             results.Add(new GradeResult(module.Code, module.Title, grade.Mark, grade.PublishedAt));
-            weighted.Add((grade.Mark, module.Credits));
+            if (grade.Mark is { } mark)
+            {
+                weighted.Add((mark, module.Credits));
+            }
         }
 
         var average = Classification.WeightedAverage(weighted);
@@ -140,12 +145,18 @@ public static class StudentEndpoints
                 break;
         }
 
+        var academicYear = await db.AcademicSettings.AsNoTracking()
+            .Where(s => s.Id == AcademicSettings.SingletonId)
+            .Select(s => s.AcademicYear)
+            .SingleOrDefaultAsync(cancellationToken) ?? StartupBackfills.CurrentAcademicYear;
+
         var enrolment = new Enrolment
         {
             Id = Guid.CreateVersion7(),
             StudentId = student.Id,
             ModuleId = module.Id,
             EnrolledAt = clock.GetUtcNow(),
+            AcademicYear = academicYear,
         };
         db.Enrolments.Add(enrolment);
         await db.SaveChangesAsync(cancellationToken);

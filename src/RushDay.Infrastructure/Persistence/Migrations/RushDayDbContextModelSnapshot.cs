@@ -315,6 +315,11 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("actor_username");
 
+                    b.Property<string>("ChainHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("chain_hash");
+
                     b.Property<string>("Details")
                         .HasColumnType("jsonb")
                         .HasColumnName("details");
@@ -385,6 +390,12 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("AcademicYear")
+                        .IsRequired()
+                        .HasMaxLength(9)
+                        .HasColumnType("character varying(9)")
+                        .HasColumnName("academic_year");
+
                     b.Property<Guid?>("CreatedByUserId")
                         .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
@@ -399,8 +410,10 @@ namespace RushDay.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Source")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Seed")
                         .HasColumnName("source");
 
                     b.Property<string>("Status")
@@ -435,6 +448,9 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                     b.HasIndex("StudentId", "ModuleId")
                         .IsUnique()
                         .HasDatabaseName("ix_enrolments_student_id_module_id");
+
+                    b.HasIndex("StudentId", "AcademicYear", "Status")
+                        .HasDatabaseName("ix_enrolments_student_id_academic_year_status");
 
                     b.ToTable("enrolments", null, t =>
                         {
@@ -506,17 +522,29 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<DateTimeOffset?>("CorrectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("corrected_at");
+
                     b.Property<Guid?>("EnteredByUserId")
                         .HasColumnType("uuid")
                         .HasColumnName("entered_by_user_id");
 
-                    b.Property<int>("Mark")
+                    b.Property<int?>("Mark")
                         .HasColumnType("integer")
                         .HasColumnName("mark");
 
                     b.Property<Guid>("ModuleId")
                         .HasColumnType("uuid")
                         .HasColumnName("module_id");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Mark")
+                        .HasColumnName("outcome");
 
                     b.Property<Guid?>("PublicationId")
                         .HasColumnType("uuid")
@@ -571,7 +599,11 @@ namespace RushDay.Infrastructure.Persistence.Migrations
 
                     b.ToTable("grades", null, t =>
                         {
-                            t.HasCheckConstraint("ck_grades_mark_range", "mark >= 0 AND mark <= 100");
+                            t.HasCheckConstraint("ck_grades_mark_outcome", "(outcome = 'Mark') = (mark IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_grades_mark_range", "mark IS NULL OR (mark >= 0 AND mark <= 100)");
+
+                            t.HasCheckConstraint("ck_grades_outcome", "outcome IN ('Mark', 'Absent', 'Deferred')");
 
                             t.HasCheckConstraint("ck_grades_published_has_instant", "status <> 'Published' OR published_at IS NOT NULL");
 
@@ -602,6 +634,10 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)")
                         .HasColumnName("full_name");
+
+                    b.Property<DateTimeOffset?>("LeftAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("left_at");
 
                     b.Property<string>("StaffNumber")
                         .IsRequired()
@@ -845,6 +881,10 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(9)")
                         .HasColumnName("academic_year");
 
+                    b.Property<int>("CurrentSemester")
+                        .HasColumnType("integer")
+                        .HasColumnName("current_semester");
+
                     b.Property<string>("InstitutionName")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -856,6 +896,16 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
                         .HasColumnName("institution_short_name");
+
+                    b.Property<string>("SupportEmail")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("support_email");
+
+                    b.Property<string>("SupportUrl")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)")
+                        .HasColumnName("support_url");
 
                     b.Property<string>("TimeZone")
                         .IsRequired()
@@ -879,6 +929,8 @@ namespace RushDay.Infrastructure.Persistence.Migrations
 
                     b.ToTable("academic_settings", null, t =>
                         {
+                            t.HasCheckConstraint("ck_academic_settings_current_semester", "current_semester IN (1, 2)");
+
                             t.HasCheckConstraint("ck_academic_settings_singleton", "id = 1");
                         });
                 });
@@ -900,6 +952,10 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)")
                         .HasColumnName("full_name");
+
+                    b.Property<DateTimeOffset?>("LeftAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("left_at");
 
                     b.Property<string>("Programme")
                         .IsRequired()

@@ -209,13 +209,16 @@ public sealed class ProbeApp : IAsyncDisposable
     /// <summary>Behind <c>LecturerOnly</c> and <c>TeachesModule</c>, like S6's <c>/api/lecturer/modules/{code}/*</c>.</summary>
     public static string ModulePath(string code) => "/api/probe/modules/" + code;
 
-    public static async Task<ProbeApp> StartAsync(RushDayApiFactory factory)
+    /// <param name="factory">Supplies the database, settings and clock.</param>
+    /// <param name="webRoot">A web root to serve instead of none (the test output has no <c>wwwroot</c>).</param>
+    public static async Task<ProbeApp> StartAsync(RushDayApiFactory factory, string? webRoot = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             EnvironmentName = Environments.Development,
             ContentRootPath = AppContext.BaseDirectory,
+            WebRootPath = webRoot,
         });
         builder.WebHost.UseTestServer();
         builder.Configuration.AddInMemoryCollection(factory.Settings(startupWork: false));

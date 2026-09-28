@@ -34,6 +34,50 @@ public sealed class IndexEndpointTests(RushDayApiFactory factory)
         }
     }
 
+    [Fact]
+    public async Task A_built_front_end_is_served_with_its_cache_rules()
+    {
+        // A local run has no web build, so give the production composition a small one.
+        var webRoot = Directory.CreateTempSubdirectory("rushday-wwwroot-").FullName;
+        Directory.CreateDirectory(Path.Combine(webRoot, "assets"));
+        await File.WriteAllTextAsync(Path.Combine(webRoot, "index.html"), "<!doctype html><html><head><title>RushDay</title></head><body><div id=\"root\"></div></body></html>");
+        await File.WriteAllTextAsync(Path.Combine(webRoot, "assets", "index-abc123.js"), "console.log('rushday');");
+        try
+        {
+            await using var probe = await ProbeApp.StartAsync(factory, webRoot);
+            using var client = probe.CreateClient();
+
+            foreach (var path in new[] { "/", "/login", "/student/results" })
+            {
+                using var page = await client.GetAsync(path);
+                Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+                Assert.Equal("text/html", page.Content.Headers.ContentType?.MediaType);
+                Assert.Equal("no-cache", page.Headers.CacheControl?.ToString());
+                Assert.Contains("<div id=\"root\">", await page.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+
+            using (var asset = await client.GetAsync("/assets/index-abc123.js"))
+            {
+                Assert.Equal(HttpStatusCode.OK, asset.StatusCode);
+                Assert.Equal("public, max-age=31536000, immutable", asset.Headers.CacheControl?.ToString());
+            }
+
+            // Missing files are an anonymous 404, never 401 and never the shell.
+            foreach (var path in new[] { "/missing.js", "/assets/gone-123.css", "/openapi/v1.json" })
+            {
+                using var missing = await client.GetAsync(path);
+                await missing.AssertProblemAsync(HttpStatusCode.NotFound, "not-found");
+            }
+
+            using var api = await client.GetAsync("/api/nope.json");
+            await api.AssertProblemAsync(HttpStatusCode.NotFound, "not-found");
+        }
+        finally
+        {
+            Directory.Delete(webRoot, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("/api/nope")]
     [InlineData("/api/students/S000001/dashboard")]

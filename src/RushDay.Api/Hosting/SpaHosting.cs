@@ -59,6 +59,13 @@ public static class SpaHosting
             app.MapFallbackToFile(IndexFile, StaticFileOptions)
                 .AllowAnonymous()
                 .ExcludeFromDescription();
+
+            // A file-like path that static files did not serve (/missing.js) matches no endpoint otherwise, and the
+            // fallback authorization policy would answer 401 to an anonymous caller; it is a plain 404.
+            app.MapFallback("{**path:file}", (HttpContext http) =>
+                    ProblemResults.WriteAsync(http, StatusCodes.Status404NotFound, ProblemTypes.NotFound))
+                .AllowAnonymous()
+                .ExcludeFromDescription();
         }
         else
         {

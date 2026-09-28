@@ -16,8 +16,9 @@ export function CardHeader({ className, ...props }: ComponentProps<'div'>) {
 }
 
 export interface CardTitleProps extends ComponentProps<'h2'> {
-  /** Heading level should follow the page outline; the look stays the same. */
-  as?: 'h2' | 'h3' | 'h4'
+  /** Heading level should follow the page outline; the look stays the same. 'h1' is for a page
+   *  whose only heading is inside this card, such as /login. */
+  as?: 'h1' | 'h2' | 'h3' | 'h4'
 }
 
 export function CardTitle({ as: Tag = 'h2', className, ...props }: CardTitleProps) {

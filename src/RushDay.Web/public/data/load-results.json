@@ -1,0 +1,119 @@
+{
+  "generatedAt": "2026-09-28T22:02:20.192Z",
+  "machine": "Developer laptop: Windows 11, .NET 10, PostgreSQL 18 (native)",
+  "runs": [
+    {
+      "id": "enrolment-rush-20260927-201228",
+      "scenario": "enrolment-rush",
+      "version": "v0",
+      "label": "Enrolment rush (v0, read-then-write update)",
+      "ranAt": "2026-09-27T20:12:28",
+      "source": "load/results/enrolment-rush-20260927-201228.json",
+      "notes": "500 students racing for 30 places on CS3099 against the v0 API, which has no atomic conditional update.",
+      "metrics": {
+        "requests": 501,
+        "failedRate": 0.6906187624750499,
+        "p50Ms": 0,
+        "p95Ms": 729.406,
+        "maxMs": 929.1846,
+        "achievedRate": 512.6947728465387,
+        "accepted": 154,
+        "rejectedFull": 84,
+        "errored": 262
+      }
+    },
+    {
+      "id": "results-day-20260927-201336",
+      "scenario": "results-day",
+      "version": "v0",
+      "label": "Results day (v0, N+1 dashboard query)",
+      "ranAt": "2026-09-27T20:13:36",
+      "source": "load/results/results-day-20260927-201336.json",
+      "notes": "Ramping arrival rate to 800 requests/s against the v0 dashboard endpoint.",
+      "metrics": {
+        "requests": 104399,
+        "failedRate": 0,
+        "p50Ms": 3.665,
+        "p95Ms": 6.521579999999993,
+        "maxMs": 358.5358,
+        "achievedRate": 434.9942414356573
+      }
+    },
+    {
+      "id": "dashboard-knee-1000rps-20260927-201844",
+      "scenario": "dashboard-knee",
+      "version": "v0",
+      "label": "Dashboard knee at 1,000 requests/s (v0)",
+      "ranAt": "2026-09-27T20:18:44",
+      "source": "load/results/dashboard-knee-1000rps-20260927-201844.json",
+      "targetRate": 1000,
+      "metrics": {
+        "requests": 27066,
+        "failedRate": 0.00036946722825685364,
+        "p50Ms": 5.1585,
+        "p95Ms": 2486.2524,
+        "maxMs": 5293.24,
+        "p99Ms": 3055.622929999999,
+        "achievedRate": 870.3570530316019,
+        "droppedIterations": 2935
+      }
+    },
+    {
+      "id": "dashboard-knee-2000rps-20260927-201844",
+      "scenario": "dashboard-knee",
+      "version": "v0",
+      "label": "Dashboard knee at 2,000 requests/s (v0)",
+      "ranAt": "2026-09-27T20:18:44",
+      "source": "load/results/dashboard-knee-2000rps-20260927-201844.json",
+      "targetRate": 2000,
+      "metrics": {
+        "requests": 23279,
+        "failedRate": 0.08295029855234332,
+        "p50Ms": 5703.6687,
+        "p95Ms": 7326.86331,
+        "maxMs": 11409.8625,
+        "p99Ms": 7736.503868000002,
+        "achievedRate": 696.7634912308832,
+        "droppedIterations": 36723
+      }
+    },
+    {
+      "id": "dashboard-knee-3000rps-20260927-201844",
+      "scenario": "dashboard-knee",
+      "version": "v0",
+      "label": "Dashboard knee at 3,000 requests/s (v0)",
+      "ranAt": "2026-09-27T20:18:44",
+      "source": "load/results/dashboard-knee-3000rps-20260927-201844.json",
+      "targetRate": 3000,
+      "metrics": {
+        "requests": 30875,
+        "failedRate": 0.19899595141700405,
+        "p50Ms": 1591.3259,
+        "p95Ms": 8267.86999,
+        "maxMs": 10220.6788,
+        "p99Ms": 8707.949885999997,
+        "achievedRate": 919.1968344760445,
+        "droppedIterations": 59153
+      }
+    },
+    {
+      "id": "dashboard-knee-4000rps-20260927-201844",
+      "scenario": "dashboard-knee",
+      "version": "v0",
+      "label": "Dashboard knee at 4,000 requests/s (v0)",
+      "ranAt": "2026-09-27T20:18:44",
+      "source": "load/results/dashboard-knee-4000rps-20260927-201844.json",
+      "targetRate": 4000,
+      "metrics": {
+        "requests": 25900,
+        "failedRate": 0.1623166023166023,
+        "p50Ms": 6184.0104,
+        "p95Ms": 8205.99766,
+        "maxMs": 9781.7241,
+        "p99Ms": 8628.278732,
+        "achievedRate": 710.8154158013713,
+        "droppedIterations": 94100
+      }
+    }
+  ]
+}

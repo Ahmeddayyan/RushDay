@@ -1,0 +1,50 @@
+[
+  {
+    "file": "enrolment-rush-20260927-201228.json",
+    "scenario": "enrolment-rush",
+    "version": "v0",
+    "label": "Enrolment rush (v0, read-then-write update)",
+    "ranAt": "2026-09-27T20:12:28",
+    "notes": "500 students racing for 30 places on CS3099 against the v0 API, which has no atomic conditional update."
+  },
+  {
+    "file": "results-day-20260927-201336.json",
+    "scenario": "results-day",
+    "version": "v0",
+    "label": "Results day (v0, N+1 dashboard query)",
+    "ranAt": "2026-09-27T20:13:36",
+    "notes": "Ramping arrival rate to 800 requests/s against the v0 dashboard endpoint."
+  },
+  {
+    "file": "dashboard-knee-1000rps-20260927-201844.json",
+    "scenario": "dashboard-knee",
+    "version": "v0",
+    "label": "Dashboard knee at 1,000 requests/s (v0)",
+    "ranAt": "2026-09-27T20:18:44",
+    "targetRate": 1000
+  },
+  {
+    "file": "dashboard-knee-2000rps-20260927-201844.json",
+    "scenario": "dashboard-knee",
+    "version": "v0",
+    "label": "Dashboard knee at 2,000 requests/s (v0)",
+    "ranAt": "2026-09-27T20:18:44",
+    "targetRate": 2000
+  },
+  {
+    "file": "dashboard-knee-3000rps-20260927-201844.json",
+    "scenario": "dashboard-knee",
+    "version": "v0",
+    "label": "Dashboard knee at 3,000 requests/s (v0)",
+    "ranAt": "2026-09-27T20:18:44",
+    "targetRate": 3000
+  },
+  {
+    "file": "dashboard-knee-4000rps-20260927-201844.json",
+    "scenario": "dashboard-knee",
+    "version": "v0",
+    "label": "Dashboard knee at 4,000 requests/s (v0)",
+    "ranAt": "2026-09-27T20:18:44",
+    "targetRate": 4000
+  }
+]

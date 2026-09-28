@@ -9,39 +9,68 @@ on:
   pull_request:
 
 jobs:
-  build-and-test:
+  # Builds and verifies the SPA, then hands the built wwwroot to build-and-test so the .NET job
+  # never needs Node (05-frontend.md section 14).
+  web:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/RushDay.Web
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      # Front end first: its build writes src/RushDay.Api/wwwroot, which the .NET integration tests serve.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: src/RushDay.Web/package-lock.json
 
-      - name: Front-end install
+      - name: Install
         run: npm ci
-        working-directory: src/RushDay.Web
 
-      - name: Front-end lint
+      - name: Lint
         run: npm run lint
-        working-directory: src/RushDay.Web
 
-      - name: Front-end typecheck
+      - name: Typecheck
         run: npm run typecheck
-        working-directory: src/RushDay.Web
 
-      - name: Front-end tests
-        run: npm test
-        working-directory: src/RushDay.Web
+      - name: Test with coverage
+        run: npm run test:coverage
 
-      - name: Front-end build
+      - name: Load-results data is up to date
+        run: npm run load-results -- --check
+
+      - name: Build
         run: npm run build
-        working-directory: src/RushDay.Web
 
-      - uses: actions/setup-dotnet@v5
+      - name: Bundle budget
+        run: npm run bundle-budget
+
+      - name: Dependency audit (blocking)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Dependency audit (full, informational)
+        run: npm audit
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: web-dist
+          path: src/RushDay.Api/wwwroot
+
+  build-and-test:
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # The SPA is already built; the .NET build embeds it as static content without touching Node.
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: web-dist
+          path: src/RushDay.Api/wwwroot
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
 
@@ -50,6 +79,11 @@ jobs:
 
       - name: Build
         run: dotnet build --no-restore --configuration Release
+
+      - name: Vulnerable package scan
+        run: |
+          dotnet list package --vulnerable --include-transitive 2>&1 | tee vulnerable.txt
+          ! grep -q "has the following vulnerable packages" vulnerable.txt
 
       - name: Unit tests
         run: dotnet test tests/RushDay.UnitTests --no-build --configuration Release --logger trx --results-directory TestResults
@@ -62,7 +96,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: test-results
           path: TestResults

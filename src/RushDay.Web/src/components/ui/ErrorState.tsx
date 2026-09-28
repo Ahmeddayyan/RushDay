@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 import { RefreshCw, TriangleAlert, type LucideIcon } from 'lucide-react'
 
+import { describeProblem } from '@/api/problem'
 import { cn } from '@/lib/cn'
-import { describeError } from '@/lib/errors'
 
 import { Button } from './Button'
 
@@ -30,7 +30,7 @@ export function ErrorState({
   compact = false,
   className,
 }: ErrorStateProps) {
-  const message = description ?? (error === undefined ? undefined : describeError(error))
+  const message = description ?? (error === undefined ? undefined : describeProblem(error).message)
 
   return (
     <div

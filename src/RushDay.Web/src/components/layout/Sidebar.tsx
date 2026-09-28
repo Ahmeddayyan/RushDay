@@ -1,22 +1,26 @@
-import { Link } from 'react-router'
+import { NavLink } from 'react-router'
 
-import { NavList } from './NavList'
+import { navItems, navLinkClassName } from './navItems'
 
-/** Desktop navigation. Hidden below the md breakpoint, where <MobileNav> takes over. */
+/** Desktop navigation (>= 1024 px). Below that, <MobileDrawer> takes over. */
 export function Sidebar() {
   return (
-    <aside className="hidden w-64 shrink-0 flex-col border-r border-border bg-surface md:flex">
+    <aside className="hidden w-64 shrink-0 flex-col border-r border-border bg-surface lg:flex">
       <div className="flex h-14 items-center border-b border-border px-5">
-        <Link to="/" className="rounded-sm text-lg font-semibold tracking-tight text-text">
-          RushDay
-        </Link>
+        <span className="text-lg font-semibold tracking-tight text-text">RushDay</span>
       </div>
       <nav aria-label="Primary" className="flex-1 p-3">
-        <NavList />
+        <ul className="flex flex-col gap-1">
+          {navItems.map(({ to, label, icon: Icon, end }) => (
+            <li key={to}>
+              <NavLink to={to} end={end} className={({ isActive }) => navLinkClassName(isActive)}>
+                <Icon aria-hidden="true" className="size-4 shrink-0" />
+                {label}
+              </NavLink>
+            </li>
+          ))}
+        </ul>
       </nav>
-      <p className="border-t border-border px-5 py-4 text-xs text-muted">
-        Student portal · results published 28 Sep 2026, 09:00
-      </p>
     </aside>
   )
 }

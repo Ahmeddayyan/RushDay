@@ -15,4 +15,6 @@ src/RushDay.Web/coverage/
 src/RushDay.Web/playwright-report/
 src/RushDay.Web/test-results/
 src/RushDay.Web/tests/
+src/RushDay.Web/e2e/
+src/RushDay.Web/blob-report/
 src/RushDay.Api/wwwroot/

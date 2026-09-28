@@ -1,0 +1,195 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+/*
+ * Design tokens (05-frontend.md section 9.1). Plain CSS variables are the source of truth; the
+ * @theme block below maps them into Tailwind utilities (bg-surface, text-muted, border-border, ...).
+ * Light is the default. Dark applies when the OS prefers it and nothing overrides, or when
+ * data-theme="dark" is set on <html> (lib/theme.ts). data-theme="light" forces light on a dark OS.
+ */
+:root {
+  color-scheme: light;
+  --background: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f8f9fb;
+  --border: #e2e5e9;
+  --border-strong: #c9ced6;
+  --text: #1a1d21;
+  --muted: #5f6672;
+  --subtle: #667080;
+  --primary: #2f5bea;
+  --primary-hover: #244bcc;
+  --primary-foreground: #ffffff;
+  --primary-soft: #eef2ff;
+  --success: #17703d;
+  --success-soft: #e8f5ec;
+  --warning: #7a5f14;
+  --warning-soft: #fbf3dc;
+  --danger: #b42323;
+  --danger-soft: #fbe6e6;
+  --info: #2f5bea;
+  --info-soft: #eef2ff;
+  --focus: #2f5bea;
+  --chart-accent: #2f5bea;
+  --chart-accent-2: #86b6ef;
+  --chart-accent-3: #104281;
+  --chart-muted: #898781;
+  --chart-grid: #e1e0d9;
+  --chart-critical: #d03b3b;
+  --radius: 12px;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow: 0 4px 16px rgb(0 0 0 / 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --background: #0f1216;
+    --surface: #171b21;
+    --surface-2: #1e232b;
+    --border: #2a3038;
+    --border-strong: #3a424d;
+    --text: #e8eaed;
+    --muted: #9aa3ad;
+    --subtle: #7f8894;
+    --primary: #8aa4ff;
+    --primary-hover: #a3b7ff;
+    --primary-foreground: #0f1216;
+    --primary-soft: #1e2534;
+    --success: #5ccb85;
+    --success-soft: #15301f;
+    --warning: #e3c15a;
+    --warning-soft: #33290f;
+    --danger: #f07575;
+    --danger-soft: #3a1717;
+    --info: #8aa4ff;
+    --info-soft: #1e2534;
+    --focus: #8aa4ff;
+    --chart-accent: #3987e5;
+    --chart-accent-2: #6da7ec;
+    --chart-accent-3: #184f95;
+    --chart-muted: #898781;
+    --chart-grid: #2c2c2a;
+    --chart-critical: #d03b3b;
+    --shadow-sm: none;
+    --shadow: none;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --background: #0f1216;
+  --surface: #171b21;
+  --surface-2: #1e232b;
+  --border: #2a3038;
+  --border-strong: #3a424d;
+  --text: #e8eaed;
+  --muted: #9aa3ad;
+  --subtle: #7f8894;
+  --primary: #8aa4ff;
+  --primary-hover: #a3b7ff;
+  --primary-foreground: #0f1216;
+  --primary-soft: #1e2534;
+  --success: #5ccb85;
+  --success-soft: #15301f;
+  --warning: #e3c15a;
+  --warning-soft: #33290f;
+  --danger: #f07575;
+  --danger-soft: #3a1717;
+  --info: #8aa4ff;
+  --info-soft: #1e2534;
+  --focus: #8aa4ff;
+  --chart-accent: #3987e5;
+  --chart-accent-2: #6da7ec;
+  --chart-accent-3: #184f95;
+  --chart-muted: #898781;
+  --chart-grid: #2c2c2a;
+  --chart-critical: #d03b3b;
+  --shadow-sm: none;
+  --shadow: none;
+}
+
+/* `dark:` utilities key off the resolved attribute that lib/theme.ts always sets. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-focus: var(--focus);
+  --color-chart-accent: var(--chart-accent);
+  --color-chart-accent-2: var(--chart-accent-2);
+  --color-chart-accent-3: var(--chart-accent-3);
+  --color-chart-muted: var(--chart-muted);
+  --color-chart-grid: var(--chart-grid);
+  --color-chart-critical: var(--chart-critical);
+
+  --font-sans:
+    'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Menlo, Consolas, monospace;
+
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 4px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--background);
+    color: var(--text);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* One visible focus ring everywhere; components only add to it. */
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+}

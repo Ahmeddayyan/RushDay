@@ -14,6 +14,7 @@ export {
 export { EmptyState, type EmptyStateProps } from './EmptyState'
 export { ErrorState, type ErrorStateProps } from './ErrorState'
 export { Input, type InputProps } from './Input'
+export { PageHeader, type PageHeaderProps } from './PageHeader'
 export { Spinner, type SpinnerProps, type SpinnerSize } from './Spinner'
 export {
   Table,

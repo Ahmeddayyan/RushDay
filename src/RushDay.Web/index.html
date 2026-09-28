@@ -1,37 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f5f7" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1216" />
     <title>RushDay</title>
     <meta
       name="description"
-      content="A university student portal built to fall over on results day, then fixed one measured step at a time."
+      content="I built RushDay because my own university's portal fell over every results day and enrolment window. I wanted to understand why that happens and to build a portal that doesn't crash under the same load."
     />
-    <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0f1216" media="(prefers-color-scheme: dark)" />
-    <meta name="color-scheme" content="light dark" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <script>
-      // Apply the saved theme before first paint so there is no flash. Mirrors src/features/theme.
-      ;(function () {
-        try {
-          var stored = localStorage.getItem('rushday.theme')
-          var theme =
-            stored === 'light' || stored === 'dark'
-              ? stored
-              : window.matchMedia('(prefers-color-scheme: dark)').matches
-                ? 'dark'
-                : 'light'
-          document.documentElement.dataset.theme = theme
-        } catch (_) {
-          /* storage or matchMedia unavailable: CSS falls back to prefers-color-scheme */
-        }
-      })()
-    </script>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>RushDay needs JavaScript. Please enable it and reload.</noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

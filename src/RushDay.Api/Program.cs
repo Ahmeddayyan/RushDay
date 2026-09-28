@@ -15,7 +15,7 @@ var databaseOptions = builder.Configuration.GetSection(DatabaseOptions.SectionNa
 
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddRushDayPersistence(connectionString);
+builder.Services.AddRushDayPersistence(connectionString, databaseOptions.MaxPoolSize);
 builder.Services.AddHealthChecks().AddDbContextCheck<RushDayDbContext>();
 
 var app = builder.Build();
@@ -30,8 +30,29 @@ if (seedCommand || databaseOptions.MigrateOnStartup)
 
     if (seedCommand || databaseOptions.SeedOnStartup)
     {
-        await DatabaseSeeder.SeedAsync(db, new SeedOptions { StudentCount = databaseOptions.SeedStudentCount });
+        await DatabaseSeeder.SeedAsync(db, new SeedOptions
+        {
+            StudentCount = databaseOptions.SeedStudentCount,
+            ResultsDay = databaseOptions.SeedResultsDay,
+        });
         app.Logger.LogInformation("Database seeded.");
+    }
+
+    if (seedCommand || databaseOptions.BackfillOnStartup)
+    {
+        var branding = builder.Configuration.GetSection("Branding");
+        var backfillOptions = new StartupBackfillOptions
+        {
+            DemoEnabled = builder.Configuration.GetValue<bool>("Demo:Enabled"),
+            BootstrapAdminPassword = builder.Configuration["Bootstrap:AdminPassword"],
+            InstitutionName = branding["InstitutionName"] ?? StartupBackfillOptions.DefaultInstitutionName,
+            InstitutionShortName = branding["InstitutionShortName"] ?? StartupBackfillOptions.DefaultInstitutionShortName,
+            TimeZone = branding["TimeZone"] ?? StartupBackfillOptions.DefaultTimeZone,
+            SeedResultsDay = databaseOptions.SeedResultsDay,
+        };
+        var clock = scope.ServiceProvider.GetRequiredService<TimeProvider>();
+        await StartupBackfills.RunAsync(db, backfillOptions, clock, app.Logger);
+        app.Logger.LogInformation("Startup backfills complete.");
     }
 }
 

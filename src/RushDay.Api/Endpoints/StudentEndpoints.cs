@@ -127,7 +127,7 @@ public static class StudentEndpoints
                   (_, m) => m.Credits)
             .SumAsync(cancellationToken);
 
-        var decision = EnrolmentRules.Evaluate(module, enrolledCount, creditsInSemester, alreadyEnrolled);
+        var decision = EnrolmentRules.Evaluate(module, enrolledCount, creditsInSemester, alreadyEnrolled, windowOpen: true);
         switch (decision)
         {
             case EnrolmentDecision.AlreadyEnrolled:

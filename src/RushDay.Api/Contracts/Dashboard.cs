@@ -15,4 +15,4 @@ public sealed record EnrolledModule(string Code, string Title, int Credits, stri
 
 public sealed record TimetableEntry(string ModuleCode, string Day, string StartTime, string EndTime, string Room);
 
-public sealed record GradeResult(string ModuleCode, string ModuleTitle, int Mark, DateTimeOffset PublishedAt);
+public sealed record GradeResult(string ModuleCode, string ModuleTitle, int Mark, DateTimeOffset? PublishedAt);

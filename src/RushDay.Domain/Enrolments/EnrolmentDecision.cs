@@ -4,6 +4,7 @@ public enum EnrolmentDecision
 {
     Accepted,
     AlreadyEnrolled,
-    ModuleFull,
+    WindowClosed,
     CreditLimitExceeded,
+    ModuleFull,
 }

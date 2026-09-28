@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\RushDay.Domain\RushDay.Domain.csproj" />
+    <ProjectReference Include="..\..\src\RushDay.Infrastructure\RushDay.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

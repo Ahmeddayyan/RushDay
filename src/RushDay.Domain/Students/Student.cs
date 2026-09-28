@@ -8,4 +8,5 @@ public sealed class Student
     public required string FullName { get; init; }
     public required string Programme { get; init; }
     public int YearOfStudy { get; init; }
+    public string? Email { get; set; }
 }

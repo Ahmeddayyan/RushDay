@@ -12,6 +12,7 @@ internal sealed class StudentConfiguration : IEntityTypeConfiguration<Student>
         builder.Property(s => s.StudentNumber).HasMaxLength(16).IsRequired();
         builder.Property(s => s.FullName).HasMaxLength(200).IsRequired();
         builder.Property(s => s.Programme).HasMaxLength(200).IsRequired();
+        builder.Property(s => s.Email).HasMaxLength(256);
         builder.HasIndex(s => s.StudentNumber).IsUnique();
     }
 }

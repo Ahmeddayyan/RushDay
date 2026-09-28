@@ -1,27 +1,47 @@
+# RushDay API, first pass (stage S2): index, health, public status and the session flow.
+# Start the API with scripts/run-api.ps1 (never dotnet run). Every non-GET request needs the X-CSRF-TOKEN header,
+# whose value arrives in JSON only: from /api/auth/csrf before signing in, from the login response after.
+# Stage S11 completes this file with the student, lecturer and administrator journeys.
+
 @RushDay_HostAddress = http://localhost:5080
 
-### JSON index
+### JSON index (story, links)
 GET {{RushDay_HostAddress}}/api
 
-### Health
-GET {{RushDay_HostAddress}}/health
+### Liveness (Render's health check)
+GET {{RushDay_HostAddress}}/api/health/live
 
-### A results-day dashboard
-GET {{RushDay_HostAddress}}/students/S000001/dashboard
-Accept: application/json
+### Readiness (database check, rate-limited per address)
+GET {{RushDay_HostAddress}}/api/health/ready
 
-### Module catalogue
-GET {{RushDay_HostAddress}}/modules
-Accept: application/json
+### Public status (demo accounts only when Demo:Enabled)
+GET {{RushDay_HostAddress}}/api/public/status
 
-### The oversubscribed elective
-GET {{RushDay_HostAddress}}/modules/CS3099
-Accept: application/json
+### 1. Anonymous antiforgery token (sets the rushday.csrf cookie)
+# @name csrf
+GET {{RushDay_HostAddress}}/api/auth/csrf
 
-### Enrol on it
-POST {{RushDay_HostAddress}}/students/S000001/enrolments
+### 2. Sign in as the demo student
+# @name login
+POST {{RushDay_HostAddress}}/api/auth/login
 Content-Type: application/json
+X-CSRF-TOKEN: {{csrf.response.body.$.csrfToken}}
 
 {
-  "moduleCode": "CS3099"
+  "username": "S000001",
+  "password": "Student-Demo-2026!"
 }
+
+### 3. Who am I (a fresh token for the signed-in identity)
+# @name me
+GET {{RushDay_HostAddress}}/api/auth/me
+
+### 4. A mutation without the header is refused: 400 urn:rushday:antiforgery
+POST {{RushDay_HostAddress}}/api/auth/logout
+
+### 5. Sign out (rotates the security stamp: every session of the account ends)
+POST {{RushDay_HostAddress}}/api/auth/logout
+X-CSRF-TOKEN: {{me.response.body.$.csrfToken}}
+
+### Unknown API route: JSON 404, never index.html
+GET {{RushDay_HostAddress}}/api/nope

@@ -1,0 +1,62 @@
+using System.ComponentModel;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Hybrid;
+using RushDay.Domain.Modules;
+using RushDay.Domain.Settings;
+using RushDay.Infrastructure.Persistence;
+
+namespace RushDay.Infrastructure.Caching;
+
+/// <summary>The <c>academic_settings</c> row as cached (immutable, so HybridCache hands out one instance).</summary>
+[ImmutableObject(true)]
+public sealed record SettingsSnapshot(
+    string AcademicYear,
+    Semester CurrentSemester,
+    string InstitutionName,
+    string InstitutionShortName,
+    string TimeZone,
+    string? SupportEmail,
+    string? SupportUrl,
+    DateTimeOffset UpdatedAt);
+
+/// <summary>
+/// <c>settings</c>, 60 s. Invalidated by <c>PUT /api/admin/settings</c> (S6). Null only on a database whose backfills
+/// have not created the row yet.
+/// </summary>
+public sealed class SettingsCache(HybridCache cache, RushDayDbContext db, ICacheMetrics metrics)
+{
+    public static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(60);
+
+    public async ValueTask<SettingsSnapshot?> GetAsync(CancellationToken cancellationToken = default)
+    {
+        var holder = await cache.GetOrCreateAsync(
+            metrics,
+            CacheKeys.Settings,
+            CacheKeys.Settings,
+            Lifetime,
+            async ct => new SettingsHolder(await LoadAsync(ct)),
+            cancellationToken);
+        return holder.Value;
+    }
+
+    public ValueTask InvalidateAsync(CancellationToken cancellationToken = default) =>
+        cache.RemoveAsync(CacheKeys.Settings, cancellationToken);
+
+    private Task<SettingsSnapshot?> LoadAsync(CancellationToken cancellationToken) =>
+        db.AcademicSettings.AsNoTracking()
+            .Where(s => s.Id == AcademicSettings.SingletonId)
+            .Select(s => new SettingsSnapshot(
+                s.AcademicYear,
+                s.CurrentSemester,
+                s.InstitutionName,
+                s.InstitutionShortName,
+                s.TimeZone,
+                s.SupportEmail,
+                s.SupportUrl,
+                s.UpdatedAt))
+            .SingleOrDefaultAsync(cancellationToken);
+
+    /// <summary>Wraps a possibly-null row so "no row yet" is cached like any other value.</summary>
+    [ImmutableObject(true)]
+    private sealed record SettingsHolder(SettingsSnapshot? Value);
+}

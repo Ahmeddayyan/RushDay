@@ -11,7 +11,6 @@ namespace RushDay.IntegrationTests.Auth;
 [Collection(ApiCollection.Name)]
 public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
 {
-    private const string StudentSkip = "S4/S6: the student routes arrive in S4";
     private const string StaffSkip = "S4/S6: the lecturer and administrator routes arrive in S6";
 
     [Fact]
@@ -103,7 +102,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         }
     }
 
-    [Fact(Skip = StudentSkip)]
+    [Fact]
     public async Task Lecturer_on_student_routes_is_403()
     {
         using var lecturer = await factory.LoginAsync(DemoAccounts.LecturerUsername, DemoAccounts.LecturerPassword);
@@ -115,7 +114,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         }
     }
 
-    [Fact(Skip = StudentSkip)]
+    [Fact]
     public async Task Admin_on_student_routes_is_403()
     {
         using var admin = await factory.LoginAsync(DemoAccounts.AdminUsername, DemoAccounts.AdminPassword);

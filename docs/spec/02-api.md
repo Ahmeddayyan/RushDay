@@ -25,15 +25,19 @@ D4–D6, D13, D15–D17, D25 and D27–D32 of `00-overview.md` apply. Data shape
   keyed by camelCase property. Every free-text query parameter (`q`, `actor`, `action`) carries `[StringLength(100)]`.
   A body that does not bind (malformed JSON, a wrong JSON type, an empty body) is 400 `validation` in every
   environment: `RouteHandlerOptions.ThrowOnBadRequest = false`, so Development does not turn it into a 500
-  (`ProblemTypesTests.Unbindable_bodies_are_validation_problems`). Binding and validation run before the endpoint
+  (`ProblemTypesTests.Unbindable_bodies_are_validation_problems`). Text PostgreSQL cannot store (a NUL character,
+  SQLSTATE 22021) that gets past a validator is 400 `validation` too (the exception handler), never a 500; the
+  validators are meant to stop it first (`POST /api/me/enrolments` takes only an ASCII module code). Binding and validation run before the endpoint
   filters, so a malformed or invalid request answers 400 `validation` even without a valid antiforgery token or while a
   gate (section 2.3) would refuse it; neither discloses anything, and the filters still guard every request that binds.
 - Query parameters holding a semester (`GET /api/admin/results`) are bound through a `SemesterQuery` record with
   `[RegularExpression("^(?i)(autumn|spring)$")]`: `autumn` or `spring`, case-insensitive, numeric values rejected with
   400 `validation`. JSON bodies use the enum converter (`"autumn" | "spring"`).
-- Route constraints: `{studentNumber:regex(^S\d{{6}}$)}`, `{code:regex(^[A-Z]{{2}}\d{{4}}$)}`,
-  `{staffNumber:regex(^L\d{{5}}$)}`, `{id:guid}`. Module codes and student numbers in bodies are upper-cased
-  server-side before lookup.
+- Route constraints: `{studentNumber:regex(^S[0-9]{{6}}$)}`, `{code:regex(^[A-Z]{{2}}[0-9]{{4}}$)}`,
+  `{staffNumber:regex(^L[0-9]{{5}}$)}`, `{id:guid}`. Digits are `[0-9]` in every route constraint and body pattern,
+  never `\d`, which in .NET matches every Unicode decimal digit (Arabic-Indic, full-width): a path with such digits is
+  no code and answers the `/api` fallback's 404 `not-found`. Module codes and student numbers in bodies are
+  upper-cased server-side before lookup.
 - Mutations (POST, PUT, DELETE) require the antiforgery header (section 3) and are subject to the `write` or a more
   specific rate-limit policy (section 5). Three GET routes that stream personal data (`GET /api/admin/audit/export.csv`,
   `GET /api/me/export.json`, `GET /api/admin/students/{n}/export.json`) are also under `write`.
@@ -262,8 +266,8 @@ the scheme out. No email or SMS channel is needed. Students never enrol a factor
 | Method and route | Auth | Request | Response | Codes |
 |---|---|---|---|---|
 | `POST /api/auth/mfa/setup` | authenticated staff (allowed while `mfa_setup=1`) | | `{ sharedKey: string (base32, grouped in fours), otpauthUri: string }` (`ResetAuthenticatorKeyAsync` then `GetAuthenticatorKeyAsync`; issuer `Branding:InstitutionShortName`, label the username); audit `account.mfa_setup_started` | 200; 403 `forbidden` (role `Student`); 409 `demo-account` (`is_demo`); 409 `mfa-already-enabled` when `two_factor_enabled` |
-| `POST /api/auth/mfa/enable` | authenticated staff | `{ code: /^\d{6}$/ }` | `Me` (fresh claims via `RefreshSignInAsync`: `mfa=1`, no `mfa_setup`); `VerifyTwoFactorTokenAsync` (a step not used before) then `SetTwoFactorEnabledAsync(true)`; audit `account.mfa_enabled` | 200; 400 `invalid-mfa-code`; 403 `forbidden` (role `Student`); 409 `demo-account`, `mfa-already-enabled` |
-| `POST /api/auth/mfa/verify` | anonymous route (`AllowAnonymous`) + the `rushday.mfa` cookie; `login` policy and `LoginThrottle` windows apply | `{ code: /^\d{6}$/ }` | `Me`; the challenge's stamp must still be the account's, then `SignInManager.TwoFactorAuthenticatorSignInAsync(code, isPersistent: false, rememberClient: false)`, then the success completion of section 2.3 step 6 | 200; 401 `invalid-credentials` (wrong or already-used code, expired or missing cookie, a stamp that changed since the password step; Identity counts a wrong code as an access failure, so lockout applies after 5) |
+| `POST /api/auth/mfa/enable` | authenticated staff | `{ code: /^[0-9]{6}$/ }` | `Me` (fresh claims via `RefreshSignInAsync`: `mfa=1`, no `mfa_setup`); `VerifyTwoFactorTokenAsync` (a step not used before) then `SetTwoFactorEnabledAsync(true)`; audit `account.mfa_enabled` | 200; 400 `invalid-mfa-code`; 403 `forbidden` (role `Student`); 409 `demo-account`, `mfa-already-enabled` |
+| `POST /api/auth/mfa/verify` | anonymous route (`AllowAnonymous`) + the `rushday.mfa` cookie; `login` policy and `LoginThrottle` windows apply | `{ code: /^[0-9]{6}$/ }` | `Me`; the challenge's stamp must still be the account's, then `SignInManager.TwoFactorAuthenticatorSignInAsync(code, isPersistent: false, rememberClient: false)`, then the success completion of section 2.3 step 6 | 200; 401 `invalid-credentials` (wrong or already-used code, expired or missing cookie, a stamp that changed since the password step; Identity counts a wrong code as an access failure, so lockout applies after 5) |
 | Should: `POST /api/auth/mfa/recovery-codes` | authenticated, `mfa=1` | | `{ codes: string[10] }` shown once (`GenerateNewTwoFactorRecoveryCodesAsync`); `POST /api/auth/mfa/verify` accepts `{ recoveryCode }` as an alternative | 200 |
 
 `Auth:RequireMfaForRoles` (default `["Admin"]`): a user in a listed role whose `two_factor_enabled` is false signs in
@@ -373,8 +377,10 @@ HttpContext.TraceIdentifier`) on every problem and fills `type` when the framewo
 413 → `payload-too-large`, 415 → `unsupported-media-type`, 429 → `rate-limited`, 500 → `internal-error`,
 503 → `server-busy`). `UseExceptionHandler()` (no exception text), `UseStatusCodePages()`, `AddRequestTimeouts`
 (15 s default → 503 `timeout`, `Retry-After: 2`). A transient `NpgsqlException` → 503 `server-busy`, `Retry-After: 2`;
-the metric `rushday.db.pool_wait_timeouts` is incremented only when its inner exception is a `TimeoutException` (pool
-wait), not for a dead pooled connection after a Neon resume.
+the metric `rushday.db.pool_wait_timeouts` is incremented only for Npgsql's pool-exhaustion exception (`The connection
+pool has been exhausted`, inner `TimeoutException`), not for a command timeout on a lock wait (also an inner
+`TimeoutException`) and not for a dead pooled connection after a Neon resume. A `PostgresException` with SQLSTATE
+22021 (text the database cannot store) → 400 `validation`.
 
 The `/api/{**rest}` fallback outranks the framework's method and media-type answers: a route that exists but not for
 the method or body type (`PUT /api/auth/login`, a form-encoded POST, and `HEAD` on a GET route, since minimal APIs map
@@ -517,9 +523,9 @@ Every endpoint in this table, the `/api/{**rest}` 404 fallback, `MapFallbackToFi
 | `GET /api/me/results` | | `{ semesters: [{ academicYear: string; semester; state: 'published' \| 'scheduled' \| 'pending'; publishAt: string \| null; results: GradeResult[] }], weightedAverage: number \| null, classification: string \| null }`, newest year first, autumn before spring | 200 |
 | `GET /api/me/timetable` | | `TimetableEntry[]` for active enrolments of the current academic year on modules of `academic_settings.current_semester` | 200 |
 | `GET /api/me/enrolments` | | `MyEnrolment[]`, every academic year, current year first then `enrolledAt` desc (the catalogue labels earlier years "Completed") | 200 |
-| `POST /api/me/enrolments` (`enrol`) | `{ moduleCode }` | `{ moduleCode, enrolledAt, placesRemaining }` (no `Location` header: there is no single-enrolment GET) | 201; 404 `module-not-found`; 409 `already-enrolled`, `module-full`, `module-inactive`, `enrolment-window-closed`, `results-exist`, `student-left`; 422 `credit-limit-exceeded` |
+| `POST /api/me/enrolments` (`enrol`) | `{ moduleCode: /^\s*[A-Za-z]{2}[0-9]{4}\s*$/ }` (trimmed and upper-cased) | `{ moduleCode, enrolledAt, placesRemaining }` (no `Location` header: there is no single-enrolment GET) | 201; 404 `module-not-found`; 409 `already-enrolled`, `module-full`, `module-inactive`, `enrolment-window-closed`, `results-exist`, `student-left`; 422 `credit-limit-exceeded` |
 | `DELETE /api/me/enrolments/{code}` (`enrol`) | | | 204; 404 `not-enrolled`; 409 `withdrawal-deadline-passed`, `results-exist` |
-| `GET /api/me/export.json` (`write`) | | `StudentExport` = `AdminStudentView` minus `recentAudit` and `account` (`{ student, enrolments, grades (visible only: `visibleToStudent = true` rows, no drafts), weightedAverage, classification, exportedAt }`), `Content-Disposition: attachment; filename="rushday-{studentNumber}.json"`; audit `student.exported_self` | 200 |
+| `GET /api/me/export.json` (`write`) | | `StudentExport` = `{ student, enrolments, grades: GradeResult[], weightedAverage, classification, exportedAt }`: `student` and `enrolments` as in `AdminStudentView`; `grades` the visible grades only (no drafts, and no `status`, `version` or `visibleToStudent`: they describe states the student never sees, T6); `Content-Disposition: attachment; filename="rushday-{studentNumber}.json"`; audit `student.exported_self` | 200 |
 
 ```ts
 DashboardResponse {
@@ -548,8 +554,10 @@ is never sent); else `pending` when the student has an active enrolment in that 
 `Classification.WeightedAverage`, `Classification.FromAverage`); `band` on `completed[]` is `Classification.Band(mark)`.
 "Visible" always means `GradeQueries.VisibleToStudents(db, now)`: `g.status = 'Published' AND g.published_at <= @now
 AND EXISTS (SELECT 1 FROM enrolments e WHERE e.student_id = g.student_id AND e.module_id = g.module_id AND e.status =
-'Active')`; it is the only way a student route reads `grades`, and `AdminStudentView.grades[].visibleToStudent` uses
-the same predicate.
+'Active')`. Student routes read `grades` only through `GradeQueries`: marks only through this predicate
+(`VisibleResultsFor`), scheduled instants without marks through `ScheduledInstantsFor`, and whether a Submitted or
+Published grade exists (`results-exist`, `canWithdraw`) through `WithResults`; `AdminStudentView.grades[].visibleToStudent`
+uses the same predicate.
 
 ### 8.4 Lecturer (`LecturerOnly`; group `/api/lecturer`; `TeachesModule` wherever `{code}` appears; `write` limiter on mutations; every read scoped to the current academic year)
 
@@ -613,7 +621,7 @@ answers 404 `announcement-not-found`, so the route's `{code}` is the only way in
 |---|---|---|---|
 | `GET /api/admin/overview` | | `{ counts: { students; lecturers; modules; activeEnrolments; accounts; lockedAccounts; disabledAccounts }; academicYear; enrolmentWindows: WindowInfo[]; nextPublication: PublicationInfo \| null; latestPublication: PublicationInfo \| null; submissionProgress: [{ semester; modulesTotal; noStudents; draft; submitted; scheduled; published }]; recentAudit: AuditEventView[] (10); database: 'ok' \| 'degraded' }`; `activeEnrolments` and `submissionProgress` cover the current academic year; `modulesTotal` excludes `noStudents`; `database` is the result of the same `DbContext` check as `/api/health/ready`, run in-process (not through the rate-limited route) | 200 |
 | `GET /api/admin/settings` | | `{ academicYear; currentSemester: 'autumn' \| 'spring'; institutionName; institutionShortName; timeZone; supportEmail: string \| null; supportUrl: string \| null; updatedAt }` | 200 |
-| `PUT /api/admin/settings` | `{ academicYear: /^\d{4}\/\d{2}$/; currentSemester; institutionName (1..200); institutionShortName (1..32); timeZone; supportEmail? (email, ≤256); supportUrl? (absolute https URL, ≤400) }` | same as GET | 200; audit `settings.changed`; invalidates `settings`, and when `academicYear` changed runs the `reconcile_enrolled_count` statements in the same transaction and invalidates `catalogue:all` and `windows:all` |
+| `PUT /api/admin/settings` | `{ academicYear: /^[0-9]{4}\/[0-9]{2}$/; currentSemester; institutionName (1..200); institutionShortName (1..32); timeZone; supportEmail? (email, ≤256); supportUrl? (absolute https URL, ≤400) }` | same as GET | 200; audit `settings.changed`; invalidates `settings`, and when `academicYear` changed runs the `reconcile_enrolled_count` statements in the same transaction and invalidates `catalogue:all` and `windows:all` |
 
 `timeZone` validation: `TimeZoneInfo.TryFindSystemTimeZoneById(id, out _)` when the runtime has ICU, otherwise (when
 `AppContext.TryGetSwitch("System.Globalization.Invariant", out var inv) && inv`, which is the case on this project's
@@ -681,7 +689,7 @@ before, after, reason }`. Every one of these invalidates `publications:brief`.
 | Method and route | Request | Response | Codes |
 |---|---|---|---|
 | `GET /api/admin/students` | `q?` (≤100; the section 8.4 predicate), `accountState?` (`none`\|`active`\|`locked`\|`disabled`), `page`, `pageSize` | `Paged<{ studentNumber; fullName; programme; yearOfStudy; email; leftAt: string \| null; accountState: 'none' \| 'active' \| 'locked' \| 'disabled' }>` ordered by student number | 200 |
-| `POST /api/admin/students` | `{ studentNumber: /^S\d{6}$/; fullName (1..200); programme (1..200); yearOfStudy (1..6); email? }` | the row | 201; 409 `student-number-taken`; audit `student.created` |
+| `POST /api/admin/students` | `{ studentNumber: /^S[0-9]{6}$/; fullName (1..200); programme (1..200); yearOfStudy (1..6); email? }` | the row | 201; 409 `student-number-taken`; audit `student.created` |
 | `GET /api/admin/students/{studentNumber}` | | `AdminStudentView` (below); **audited** `student.viewed { studentNumber }` (subject Student) | 200; 404 `student-not-found` |
 | `PUT /api/admin/students/{studentNumber}` | `{ fullName; programme; yearOfStudy; email }` | the row | 200; 404; audit `student.updated { before, after }`; updates the linked user's `display_name` in the same transaction |
 | `POST /api/admin/students/{studentNumber}/leave` | `{ reason (10..400) }` | `{ studentNumber; leftAt; withdrawn: number }` | 200; 404; 409 `student-left` (already left); sets `left_at`, admin-withdraws every active enrolment of the current year (`enrolment.admin_withdrawn` per row, `{ reason, override: true, left: true }`), disables the linked account (`account.disabled`), audit `student.left { reason }` |
@@ -717,14 +725,14 @@ AdminStudentView {
 | Method and route | Request | Response | Codes |
 |---|---|---|---|
 | `GET /api/admin/modules` | `includeInactive?=false` | `[ModuleSummary & { description: string \| null; marks: MarksStatus }]` | 200 |
-| `POST /api/admin/modules` | `{ code: /^[A-Z]{2}\d{4}$/; title (1..200); description? (≤2000); credits (5..60); capacity (0..10000); semester }` | `ModuleDetail` | 201; 409 `module-code-taken` |
+| `POST /api/admin/modules` | `{ code: /^[A-Z]{2}[0-9]{4}$/; title (1..200); description? (≤2000); credits (5..60); capacity (0..10000); semester }` | `ModuleDetail` | 201; 409 `module-code-taken` |
 | `PUT /api/admin/modules/{code}` | `{ title; description; credits; capacity; semester; isActive }` | `ModuleDetail` | 200; 404; 422 `capacity-below-enrolled` **only when the request lowers `capacity` below `enrolled_count`**; an unchanged capacity is always accepted even while `enrolled_count > capacity`; 422 `semester-change-with-enrolments` (`enrolledCount`) when `semester` differs and `enrolled_count > 0` (it would silently move students' credits and timetables) |
 | `GET /api/admin/modules/{code}/roster` | `q?` (≤100), `page=1`, `pageSize=50` (≤200), `academicYear?` (defaults to settings) | the lecturer roster shape of section 8.4, for any module (no `module_lecturers` join) | 200; 404 `module-not-found` |
 | `GET /api/admin/modules/{code}/marks` | `q?` (≤100), `page=1`, `pageSize=100` (≤500), `academicYear?` | `MarksSheet` with `myRole: null`, read-only (there is no admin `PUT` of marks; single marks are corrected through the results route) | 200; 404 `module-not-found` |
 | `POST /api/admin/modules/{code}/trim-to-capacity` | `{ reason (10..400) }` | `{ code; capacity; before: number; after: number; withdrawn: string[] }` | 200; 404; withdraws active enrolments latest `enrolled_at` first until `enrolled_count = capacity`, one `enrolment.admin_withdrawn { reason, override: true, trim: true }` per row, audit `module.trimmed { reason, withdrawn }` |
 | `PUT /api/admin/modules/{code}/lecturers` | `{ assignments: [{ staffNumber; role: 'leader' \| 'teacher' }] }` (exactly one leader, no duplicates, no lecturer with `left_at`) | `ModuleDetail` | 200; 404 `module-not-found`, `lecturer-not-found`; 422 `invalid-lecturer-assignment` |
 | `GET /api/admin/lecturers` | `q?` (≤100; staff number prefix or name fragment) | `[{ staffNumber; fullName; title; department; email; leftAt: string \| null; hasAccount: boolean; moduleCodes: string[] }]` | 200 |
-| `POST /api/admin/lecturers` | `{ staffNumber: /^L\d{5}$/; fullName; title (Dr\|Prof\|Mr\|Ms\|Mx); department (1..8); email? }` | the row | 201; 409 `staff-number-taken`; audit `lecturer.created` |
+| `POST /api/admin/lecturers` | `{ staffNumber: /^L[0-9]{5}$/; fullName; title (Dr\|Prof\|Mr\|Ms\|Mx); department (1..8); email? }` | the row | 201; 409 `staff-number-taken`; audit `lecturer.created` |
 | `PUT /api/admin/lecturers/{staffNumber}` | `{ fullName; title; department; email }` | the row | 200; 404 `lecturer-not-found`; audit `lecturer.updated { before, after }`; updates the linked user's `display_name` |
 | `POST /api/admin/lecturers/{staffNumber}/leave` | `{ reason (10..400) }` | the row | 200; 404; sets `left_at`, disables the linked account (`account.disabled`), audit `lecturer.left { reason }`; assignments stay and carry `left: true`; idempotent (a lecturer who already left is returned unchanged, no audit row) |
 

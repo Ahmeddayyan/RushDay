@@ -273,8 +273,8 @@ elaborate; they never reopen.
   ids are UUID strings; paged lists are `{ items, page, pageSize, total }`.
 - SQL: snake_case identifiers via `UseSnakeCaseNamingConvention()`; PascalCase string values for enum-like columns
   with CHECK constraints; `uuid` primary keys from `Guid.CreateVersion7()`; `timestamp with time zone` for instants.
-- Routes: everything under `/api`; route constraints `{studentNumber:regex(^S\d{{6}}$)}`, `{code:regex(^[A-Z]{{2}}\d{{4}}$)}`,
-  `{staffNumber:regex(^L\d{{5}}$)}`, `{id:guid}`.
+- Routes: everything under `/api`; route constraints `{studentNumber:regex(^S[0-9]{{6}}$)}`, `{code:regex(^[A-Z]{{2}}[0-9]{{4}}$)}`,
+  `{staffNumber:regex(^L[0-9]{{5}}$)}`, `{id:guid}` (digits `[0-9]`, never `\d`, `02-api.md` section 1).
 - Errors: `application/problem+json`, `type` = `urn:rushday:<slug>`, `traceId` extension always set.
 - Warnings are errors in every project; nullable on; `TimeProvider` injected, never `DateTimeOffset.UtcNow` in
   application code.

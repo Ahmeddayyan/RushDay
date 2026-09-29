@@ -296,6 +296,12 @@ leaving, module reads for the registry, the ops snapshot, reconcile and the demo
 - `OpsTests` expect `dataQuality.refreshedAt` only from the second snapshot on: the first poll after an idle spell
   starts the refresh (04 section 6.2).
 
+**From the S4 review** (04 sections 2.2 and 2.3): trim-to-capacity and leave withdraw through
+`EnrolmentService.WithdrawManyAsync` once, inside the route's transaction (never a loop of `WithdrawAsync`, and
+without locking module rows first); the reconcile route and the settings year change call
+`StartupBackfills.ReconcileEnrolledCountAsync` (the year change after its settings `UPDATE`), never the two statements
+on their own; module mutations invalidate `catalogue:all` and settings changes `settings` after the commit.
+
 **Owns**
 - `src/RushDay.Infrastructure/Grades/{MarksService,ResultsPublicationService}.cs` (publication, reschedule, cancel, unpublish, return to draft, correction), `Infrastructure/Queries/{RosterQuery,MarksSheetQuery,AdminStudentQuery,AdminResultsQuery,AuditQuery,OverviewQuery}.cs`, `Infrastructure/Modules/ModuleAdminService.cs` (create, update with the capacity and semester guards, lecturers, trim), `Infrastructure/Settings/SettingsService.cs` (year change reconciles), `Infrastructure/Enrolments/EnrolmentWindowAdminService.cs`, `Infrastructure/Students/StudentAdminService.cs` (create, update, leave), `Infrastructure/Lecturers/LecturerAdminService.cs` (create, update, leave), `Infrastructure/Audit/AuditCsvWriter.cs`, `Infrastructure/Ops/{ReconcileService,DemoResetService}.cs`.
 - `src/RushDay.Api/Endpoints/{LecturerEndpoints,AdminOverviewEndpoints,AdminSettingsEndpoints,AdminWindowEndpoints,AdminResultsEndpoints,AdminStudentEndpoints,AdminModuleEndpoints,AdminLecturerEndpoints,AdminAccountEndpoints,AdminAnnouncementEndpoints,AdminAuditEndpoints,AdminOpsEndpoints}.cs` (`AdminModuleEndpoints` includes the read-only roster and marks routes; `AdminOpsEndpoints` maps `demo-reset` only when `Demo:Enabled`), `Contracts/{Lecturer,AdminOverview,AdminSettings,AdminResults,AdminStudents,AdminModules,AdminLecturers,AdminAccounts,AdminAudit,AdminOps}.cs`.

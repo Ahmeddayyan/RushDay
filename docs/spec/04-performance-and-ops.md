@@ -20,14 +20,23 @@ The v1 targets are the checklist items in `00-overview.md` section 8 ("Correctne
 
 Fast path before any transaction: load the module row (`AsNoTracking`); unknown code → 404 `module-not-found`; when
 `!IsActive` → 409 `module-inactive`; when `enrolled_count >= capacity` and not `ForceCapacity` → 409 `module-full`
-immediately (no lock taken; this is how 470 losers get a sub-10 ms answer). `currentYear` comes from `SettingsCache`;
-`enrolled_count` is the current year's count (D28). Then:
+immediately (no lock taken: this is how most losers of a rush are answered without waiting on a row lock; their latency
+is what the machine's queueing and CPU make it, about 230 ms on average and 281 ms at p95 for the 270 losers of a
+300-student rush on the laptop in the S4 review, not a few milliseconds, and section 9 reports the measured figure). The
+settings year (`SettingsCache`) and every window (`windows:all`) are read from caches here, before the transaction, so
+no cache fill runs under a row lock; the year the enrolment is stamped and counted with is the one read under a share
+lock in step 1. `enrolled_count` is the current year's count (D28). Then:
 
 ```
 BEGIN (ReadCommitted)
-1  SELECT id, left_at FROM students WHERE id = @student FOR UPDATE      -- serialises this student's own requests
+1  SELECT id, left_at FROM students WHERE id = @student FOR NO KEY UPDATE   -- serialises this student's own requests; NO KEY
+                                                                         -- lets foreign-key checks (FOR KEY SHARE) through
    left_at IS NOT NULL → ROLLBACK → 409 student-left
-2  windowOpen = Override || EnrolmentWindowCache.IsOpen(currentYear, module.Semester, now)
+   currentYear = SELECT academic_year FROM academic_settings WHERE id = 1 FOR SHARE
+                 -- a year change cannot commit before this transaction ends; when the year differs from the cached one
+                 -- (a change committed while this request waited), the window is looked up again for currentYear in the
+                 -- windows read before the transaction
+2  windowOpen = Override || window(currentYear, module.Semester).IsOpenAt(now)
 3  existing   = SELECT * FROM enrolments WHERE student_id = @student AND module_id = @module
    current    = existing?.Status == Active AND existing.AcademicYear == @currentYear
    hasResult  = EXISTS (SELECT 1 FROM grades WHERE student_id = @student AND module_id = @module AND status IN ('Submitted','Published'))
@@ -41,19 +50,34 @@ BEGIN (ReadCommitted)
               created_by_user_id=@actor, updated_at=@now
        WHERE id=@existing AND (status='Withdrawn' OR academic_year <> @currentYear)
        0 rows → ROLLBACK → 409 already-enrolled           (lost a race for the same row)
+       if existing.academic_year <> @currentYear:         (a grade's year is its enrolment's year, 01 section 3)
+           DELETE FROM grades WHERE student_id=@student AND module_id=@module AND status='Draft'
+           -- the only grade results-exist lets through; the audit row gets discardedDraft: true when one was deleted.
+           -- A reactivation within the same year keeps its draft.
    else:
-       INSERT INTO enrolments (..., academic_year, ...) VALUES (..., @currentYear, ...)   -- 23505 unique violation → ROLLBACK → 409 already-enrolled
-7  AuditWriter.Record(enrolment.created | enrolment.admin_created)
+       INSERT INTO enrolments (..., academic_year, ...) VALUES (..., @currentYear, ...)
+       -- 23505 on ix_enrolments_student_id_module_id → ROLLBACK → 409 already-enrolled; a unique violation of any other
+       -- row in the batch (the audit row) is an error, never already-enrolled
+7  AuditWriter.Record(enrolment.created | enrolment.admin_created { ..., capacityRaised: false }), saved in one batch with
+   step 6's insert; a ForceCapacity enrolment's audit rows are inserted by the claiming statement itself (step 8)
 8  claimed = ForceCapacity
-       ? WITH before AS (SELECT capacity AS c FROM modules WHERE id = @module FOR UPDATE)
-         UPDATE modules m SET enrolled_count = m.enrolled_count + 1,
-                capacity = CASE WHEN m.enrolled_count >= m.capacity THEN m.enrolled_count + 1 ELSE m.capacity END,
-                updated_at = @now
-         FROM before WHERE m.id = @module
-         RETURNING m.capacity, m.enrolled_count, m.capacity <> before.c AS raised
-       : UPDATE modules SET enrolled_count = enrolled_count + 1, updated_at=@now WHERE id=@module AND enrolled_count < capacity
+       ? WITH before AS (SELECT capacity AS c FROM modules WHERE id = @module AND is_active FOR NO KEY UPDATE),
+              claim AS (UPDATE modules m SET enrolled_count = m.enrolled_count + 1,
+                               capacity = CASE WHEN m.enrolled_count >= m.capacity THEN m.enrolled_count + 1 ELSE m.capacity END,
+                               updated_at = @now
+                        FROM before WHERE m.id = @module AND m.is_active
+                        RETURNING m.capacity, m.enrolled_count, m.capacity <> before.c AS raised, before.c AS previous_capacity),
+              created AS (INSERT INTO audit_events (...) SELECT ..., 'enrolment.admin_created', ...,
+                                 CAST(@details AS jsonb) || jsonb_build_object('capacityRaised', claim.raised), ... FROM claim),
+              raised AS (INSERT INTO audit_events (...) SELECT ..., 'module.updated', ...,
+                                jsonb_build_object('capacity', jsonb_build_object('before', claim.previous_capacity,
+                                                   'after', claim.capacity), 'reason', @reason), ... FROM claim WHERE claim.raised)
+         SELECT capacity, enrolled_count, raised, previous_capacity FROM claim
+       : UPDATE modules SET enrolled_count = enrolled_count + 1, updated_at=@now
+         WHERE id=@module AND is_active AND enrolled_count < capacity
          RETURNING capacity, enrolled_count, false AS raised
-   claimed == 0 rows → ROLLBACK → 409 module-full
+   claimed == 0 rows → ROLLBACK → 409 module-full, or 409 module-inactive when a read after the rollback finds the module
+   deactivated since the fast path
 COMMIT → 201 { moduleCode, enrolledAt, placesRemaining = capacity - enrolled_count (from RETURNING), capacityRaised = raised (admin route only) }
 ```
 
@@ -66,7 +90,13 @@ data-modifying statement inside one, and `ExecuteSqlAsync` returns only a row co
 `Transaction = db.Database.CurrentTransaction!.GetDbTransaction()` and parameters bound by name; the handler reads
 `capacity`, `enrolled_count` and `raised` from the reader. Steps 1, 4, 6 and the withdraw updates use
 `ExecuteSqlInterpolatedAsync` / LINQ. `capacityRaised` is true only when the module was full, so the audit
-`module.updated` row is written only then (`02-api.md` section 8.5).
+`module.updated` row is written only then (`02-api.md` section 8.5). The forced claim locks the row `FOR NO KEY
+UPDATE`, the mode the `UPDATE` itself takes: `FOR UPDATE` conflicts with the `FOR KEY SHARE` that every enrolment
+insert's foreign-key check holds on the module row, so two forced enrolments on one module waited for each other's
+key-share lock and one died with 40P01 (review S4 C1). A forced override's audit rows are inserted by the claiming
+statement (data-modifying CTEs, parameters typed explicitly) rather than saved after it, so on every path the hot row is
+locked only for the claim and the commit (review S4 C8; the plain override's row goes in before the claim, with the
+insert, because its `capacityRaised` is always false).
 
 Why it is correct under PostgreSQL's default READ COMMITTED: an `UPDATE` locks each row it targets; when another
 transaction has already updated the same module row and not yet committed, ours blocks, and on its commit PostgreSQL
@@ -75,13 +105,19 @@ the increment are therefore one atomic step on the latest committed value, and a
 satisfy it. Step 8 runs last so the hot module row is locked only for that statement plus the commit, while the
 losers' inserts are rolled back with their transaction. The unique index on (`student_id`, `module_id`) makes duplicate
 rows impossible regardless of ordering, and the conditional reactivation update does the same for withdrawn rows.
-Lock order is always student → enrolment → module in both enrol and withdraw, so there is no deadlock.
+Lock order is always student (`FOR NO KEY UPDATE`) → settings row (`FOR SHARE`) → enrolment → module (`FOR NO KEY
+UPDATE`, which admits the `FOR KEY SHARE` of other enrolments' foreign-key checks) in enrolment, withdrawal and bulk
+withdrawal alike, and a module row is locked only by the last statements, so there is no deadlock
+(`EnrolmentLockingTests`, `BulkWithdrawalTests`). The year read under the share lock ties the stamped year and the
+claimed count together: a year change (its settings `UPDATE`, then the reconciliation, section 2.3) either commits
+before the enrolment reads the year or waits for the enrolment to commit.
 
 ### 2.2 Withdraw (`WithdrawAsync(studentId, moduleCode, actor, WithdrawOptions { Override, Reason })`)
 
 ```
 BEGIN
-1  SELECT id FROM students WHERE id=@student FOR UPDATE
+1  SELECT id FROM students WHERE id=@student FOR NO KEY UPDATE
+   currentYear = SELECT academic_year FROM academic_settings WHERE id = 1 FOR SHARE      (as in section 2.1 step 1)
 2  enrolment = active row for (student, module) → none → 404 not-enrolled
 3  if !Override: enrolment.academic_year = currentYear else 409 withdrawal-deadline-passed (an earlier year's row has no open deadline)
                window.AllowsWithdrawalAt(now) else 409 withdrawal-deadline-passed
@@ -89,21 +125,55 @@ BEGIN
 4  UPDATE enrolments SET status='Withdrawn', withdrawn_at=@now, updated_at=@now WHERE id=@e AND status='Active'  (0 rows → 404)
 5  if enrolment.academic_year = currentYear:     (always true for a student; an administrator may withdraw an earlier year's row)
        UPDATE modules SET enrolled_count = enrolled_count - 1, updated_at=@now WHERE id=@module AND enrolled_count > 0
+       0 rows → the count had drifted: Warning EnrolledCountDrift (event 4101) and countDecremented = false on the
+       receipt; the ops page's dataQuality.enrolledCountDrift shows it and the reconciliation repairs it
 6  AuditWriter.Record(enrolment.withdrawn | enrolment.admin_withdrawn)
 COMMIT → 204
 ```
 
+The windows (for step 3) and the cached year are read before the transaction, as in section 2.1. `WithdrawAsync`
+withdraws one row: in its own transaction, or under a savepoint in a caller's.
+
 `POST /api/admin/modules/{code}/trim-to-capacity` (current-year active rows, latest `enrolled_at` first) and
-`POST /api/admin/students/{n}/leave` (current-year active rows) call `WithdrawAsync` with `Override` per row inside
-one outer transaction (`WithdrawAsync` joins an ambient transaction instead of opening its own). Withdrawal never
-touches grades: a withdrawn student's draft stays Draft and is never submitted, published or shown (`02-api.md`
-section 8.4).
+`POST /api/admin/students/{n}/leave` (current-year active rows) call `WithdrawManyAsync(targets, actor, WithdrawOptions
+{ Override: true, Reason, Trim | Left })` once, inside the route's transaction, with the (student, module) pairs to
+withdraw. It keeps the single-row lock order across rows and takes no savepoint:
+
+```
+1  SELECT id FROM students WHERE id = ANY(@students) ORDER BY id FOR NO KEY UPDATE      -- every target student, id order
+2  currentYear = SELECT academic_year FROM academic_settings WHERE id = 1 FOR SHARE
+3  UPDATE enrolments e SET status='Withdrawn', withdrawn_at=@now, updated_at=@now
+   FROM unnest(@students, @modules) t(student_id, module_id), modules m
+   WHERE (e.student_id, e.module_id) = (t.student_id, t.module_id) AND e.status='Active' AND m.id = e.module_id
+   RETURNING e.id, e.student_id, e.module_id, m.code, e.academic_year                   -- one statement for every row
+4  one enrolment.admin_withdrawn audit row per withdrawn row (one batch)
+5  SELECT id, enrolled_count FROM modules WHERE id = ANY(@modules) ORDER BY id FOR NO KEY UPDATE
+   UPDATE modules m SET enrolled_count = greatest(m.enrolled_count - d.n, 0), updated_at=@now
+   FROM unnest(@modules, @counts) d(id, n) WHERE m.id = d.id          -- each module once, last; current-year rows only
+   (a count below the rows it loses: Warning EnrolledCountDrift, as in step 5 above)
+```
+
+It reads no cache (an override needs no window, and the year comes from step 2), so no cache fill ever runs inside the
+caller's transaction. The caller must not lock module rows before the call and should commit right after it: the module
+rows stay locked until the route's transaction ends. A student's own withdrawal racing it either finishes first (the
+bulk statement finds that row withdrawn and counts it in `notEnrolled`) or queues on its student row and then answers
+404 `not-enrolled`; neither deadlocks. A loop of `WithdrawAsync` calls in one transaction broke the order across
+iterations (the transaction held a module row from one row while waiting for the next row's student, who waited for
+that module: 40P01), and its savepoint per row overflowed the 64-entry subtransaction cache at 64 rows (review S4 C2).
+Withdrawal never touches grades: a withdrawn student's draft stays Draft and is never submitted, published or shown
+(`02-api.md` section 8.4).
 
 ### 2.3 Reconciliation
 
 The `reconcile_enrolled_count` backfill step (`01-domain-and-data.md` section 6, last step) at every start and
 `POST /api/admin/ops/reconcile` on demand run the set-based reconciliation and report modules where `enrolled_count >
-capacity` as a data-quality warning; both count only current-year active enrolments. The integration test
+capacity` as a data-quality warning; both count only current-year active enrolments. `StartupBackfills.ReconcileEnrolledCountAsync`
+runs in one transaction (the caller's when there is one: the startup step's, or the settings year change's after its
+settings `UPDATE`; else its own): `SELECT id FROM modules ORDER BY id FOR NO KEY UPDATE` first, which waits out every
+enrolment or withdrawal that has changed a count and not committed, then the two `UPDATE`s as fresh statements whose
+snapshots include those commits. Without the lock the counting subquery's snapshot predated the commit the `UPDATE`
+waited for, and a stale count overwrote the committed one (review S4 C4: 5 counted for 3 rows became 3 counted for 4).
+Callers use the method, never the two statements on their own. The integration test
 `EnrolmentConcurrencyTests` creates its own module directly through `RushDayDbContext` in the test (`ZZ3001`, spring,
 capacity 30, 15 credits, department `ZZ`, active; the admin route arrives only in S6) and invalidates
 `catalogue:all`, so it is independent of `EnrolmentTests` (which
@@ -121,7 +191,7 @@ trips does not depend on the number of rows a student or module has. `currentYea
 | Read | Queries | Shape |
 |---|---|---|
 | `GET /api/me/dashboard` (`Queries/DashboardQuery.cs`) | **5** | (1) `students WHERE id=@s`; (2) `enrolments e JOIN modules m WHERE e.student_id=@s AND e.status='Active'` (every year) → `{ moduleId, code, title, credits, semester, academicYear, enrolledAt }`, partitioned in memory into `modules` (`academicYear = currentYear`) and `completed` (earlier years); `credits` summed from the current-year part; (3) `timetable_slots t JOIN modules m WHERE t.module_id IN (@currentYearIds) AND m.semester = @currentSemester` (title and semester for `TimetableEntry`); (4) `grades g JOIN modules m JOIN enrolments e ON (e.student_id, e.module_id) = (g.student_id, g.module_id) WHERE g.student_id=@s AND e.status='Active' AND g.status='Published' AND g.published_at <= @now` → `GradeResult` (with `e.academic_year`, `g.corrected_at`), also used to fill `completed[].mark/band` and to compute `canWithdraw`'s results condition together with a `status IN ('Submitted','Published')` flag per module in the same projection; (5) `announcements WHERE deleted_at IS NULL AND published_at <= @now AND (expires_at IS NULL OR expires_at > @now) AND (scope='University' OR module_id IN (@currentYearIds)) ORDER BY pinned DESC, published_at DESC LIMIT 5`. Windows, settings and publications (`publications:brief`) come from caches. `rushday.dashboard.queries` records the value of `DbCommandCounter` for the request (section 6.1); `rushday.dashboard.duration` records elapsed ms. |
-| `GET /api/me/results` (`Queries/ResultsQuery.cs`) | 3 | visible grades (`GradeQueries.VisibleToStudents`) ⋈ modules ⋈ enrolments (year); scheduled instants: `SELECT e.academic_year, m.semester, min(g.published_at) FROM grades g JOIN modules m ... JOIN enrolments e ... WHERE g.student_id=@s AND e.status='Active' AND g.status='Published' AND g.published_at > @now GROUP BY e.academic_year, m.semester`; pending pairs: `SELECT DISTINCT e.academic_year, m.semester FROM enrolments e JOIN modules m ... WHERE e.student_id=@s AND e.status='Active'`. Grouping by (year, semester) is a unit-tested rule in `ResultsQuery` (S4). |
+| `GET /api/me/results` (`Queries/ResultsQuery.cs`) | 3 | visible grades (`GradeQueries.VisibleToStudents`) ⋈ modules ⋈ enrolments (year); scheduled instants (`GradeQueries.ScheduledInstantsFor`, instants only): `SELECT e.academic_year, m.semester, min(g.published_at) FROM grades g JOIN modules m ... JOIN enrolments e ... WHERE g.student_id=@s AND e.status='Active' AND g.status='Published' AND g.published_at > @now GROUP BY e.academic_year, m.semester`; pending pairs: `SELECT DISTINCT e.academic_year, m.semester FROM enrolments e JOIN modules m ... WHERE e.student_id=@s AND e.status='Active'`. Grouping by (year, semester) is a unit-tested rule in `ResultsQuery` (S4). |
 | `GET /api/me/timetable` | 1 | slots ⋈ modules for active current-year enrolments on modules of the current semester |
 | `GET /api/me/export.json` | 3 | student; enrolments ⋈ modules (every year and status); visible grades ⋈ modules ⋈ enrolments (+1 audit insert) |
 | `GET /api/me/enrolments` | 1 | enrolments ⋈ modules LEFT JOIN a per-module `EXISTS` on submitted/published grades, all statuses and years |
@@ -152,6 +222,17 @@ and typed entries; the L2 is simply not registered). Every entry is small (the c
 | `announcements:university` | visible university announcements | 30 s | admin announcement mutations, publish with `announce` |
 | `lecturer-modules:{lecturerId}` | module codes assigned | 60 s | `PUT /api/admin/modules/{code}/lecturers` |
 | `public-status` (OutputCache, named policy `PublicStatusCachePolicy`) | `GET /api/public/status` body | 10 s | time |
+
+**Versioned keys** (review S4 C3, C11, D5): `settings`, `catalogue:all` and `announcements:university` are read and
+invalidated through `CacheKeys.GetOrCreateVersionedAsync` and `InvalidateVersionedAsync`. The entry lives under
+`{key}:v{generation}`; invalidation advances the generation (one counter per key per `HybridCache` instance) and then
+removes the retired entry, so a fill that was in flight at the change, and may have read the rows before the commit,
+stores its value under a key no reader uses any more. `HybridCache.RemoveAsync` alone does not stop an in-flight fill,
+which then served the pre-change value for its whole lifetime (a stale year for 60 s, a deleted announcement for 30 s).
+Invalidation runs after the change has committed. `windows:all`, `publications:brief` and `lecturer-modules:*` still
+invalidate with `RemoveAsync` (an in-flight fill can outlive their invalidation by up to one lifetime). Correctness of
+enrolment never depends on a cache: the year is read under a share lock and capacity is decided by the claim (section
+2.1), which also covers a second instance during Render's deploy overlap, whose caches are its own.
 
 **Every cache factory opens its own context** (`await using var db = await contexts.CreateDbContextAsync(ct)` from
 the singleton `IDbContextFactory<RushDayDbContext>`, `Startup/RushDayDbContextFactory.cs`), never the caller's scoped
@@ -195,9 +276,11 @@ fingerprint (`05-frontend.md` section 4).
   (2.3 s on the laptop) and on Neon's 0.25 CU could exceed 10 s, and a startup timeout aborts every restart
   (`StartupTaskTests`).
 - Pool wait exhaustion surfaces as `NpgsqlException` (transient, inner `TimeoutException`) → 503 `server-busy` with
-  `Retry-After: 2` in under 5 s, never as a 500, and increments `rushday.db.pool_wait_timeouts` (only for the
-  `TimeoutException` case; a dead connection after a resume is a 503 without the metric). Zero Postgres 53300 errors
-  must appear in the API log during `dashboard-knee.js`.
+  `Retry-After: 2` in under 5 s, never as a 500, and increments `rushday.db.pool_wait_timeouts` only for Npgsql's
+  pool-exhaustion exception (message `The connection pool has been exhausted, ...`, inner `TimeoutException`); a
+  command that times out (a lock wait beyond `Command Timeout`, also an inner `TimeoutException`) and a dead
+  connection after a resume are 503s without the metric (review S4 C10). Zero Postgres 53300 errors must appear in the
+  API log during `dashboard-knee.js`.
 - Global concurrency limiter on `/api` except `/api/health/live` and `/api/admin/ops/metrics` (`02-api.md` section 5):
   permit 24 / queue 96 on Render; permit 64 / queue **1,024** locally. The local queue is deliberately larger than the
   500-VU enrolment rush so the rerun reproduces the 30 accepted / 470 fast-409 story without the limiter shedding any
@@ -373,8 +456,15 @@ API is always started with `scripts/run-api.ps1` (never `dotnet run`).
 
 1. `scripts/reset-db.ps1` (fresh seed, backfills, demo accounts); `scripts/run-api.ps1`.
 2. `scripts/load.ps1 enrolment-rush` → expect `accepted=30`, `OVERSOLD=0`, `enrolments_rejected_full=470`,
-   `enrolments_shed=0`, `enrolments_errored=0`, every rejection under 50 ms. Record the API log grep for `53300`
-   (must be empty). Reset and repeat once to show repeatability.
+   `enrolments_shed=0`, `enrolments_errored=0`; record the rejections' latency (average, p95, p99) as measured.
+   Record the API log grep for `53300` and `40P01` (both must be empty). Reset and repeat once to show repeatability.
+   Every scenario signs its students in during `setup()` spread over time (the `loginMany` batches), never with every
+   VU opening its first connection in the same instant: on this Windows client edition the listen backlog is capped
+   below Kestrel's `Backlog = 1024`, and in the S4 review 16 of 250 and 90 of 300 simultaneous first connections were
+   refused (`actively refused`) while logins spread over 15 s had none and the enrolment phase itself never had one.
+   The evidence document reports the losers' measured latency rather than a "sub-10 ms" claim: the S4 review measured
+   about 230 ms on average (p95 281 ms) for the 270 losers of a 300-student rush on the laptop, from queueing and CPU,
+   not locking.
 3. `scripts/load.ps1 results-day` → thresholds pass; note `rushday.dashboard.queries` from `/api/admin/ops/metrics`
    (`queriesPerRequest = 5`) and `process.workingSetBytes`.
 4. `scripts/load.ps1 dashboard-knee -Rate 1000`, `2000`, `3000`, `4000` → table of achieved rate, p50/p95/p99,

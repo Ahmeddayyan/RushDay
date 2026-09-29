@@ -15,11 +15,13 @@ export function createQueryClient(): QueryClient {
         gcTime: 5 * 60_000,
         refetchOnWindowFocus: false,
         retry: (failureCount, error) =>
-          !(error instanceof ApiError && error.status > 0 && error.status < 500) && failureCount < 2,
+          !(error instanceof ApiError && error.status > 0 && error.status < 500) &&
+          failureCount < 2,
         retryDelay: (attemptIndex, error) =>
           (error instanceof ApiError && error.retryAfterSeconds
             ? error.retryAfterSeconds * 1000
-            : Math.min(1000 * 2 ** attemptIndex, 8000)) + Math.random() * 1000,
+            : Math.min(1000 * 2 ** attemptIndex, 8000)) +
+          Math.random() * 1000,
       },
       mutations: {
         retry: 0,

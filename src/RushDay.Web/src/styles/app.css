@@ -109,9 +109,10 @@
   --shadow: none;
 }
 
-/* `dark:` utilities key off the resolved attribute that lib/theme.ts always sets. */
-@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
-
+/*
+ * Components use these utilities (bg-surface, text-muted, border-border, ...) and never `dark:`:
+ * the variables above already switch per theme.
+ */
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);
@@ -141,8 +142,7 @@
   --color-chart-grid: var(--chart-grid);
   --color-chart-critical: var(--chart-critical);
 
-  --font-sans:
-    'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-sans: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Menlo, Consolas, monospace;
 
   --radius-sm: calc(var(--radius) - 6px);
@@ -151,10 +151,50 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+@theme {
+  --animate-fade-in: rd-fade-in 150ms ease-out;
+  --animate-pop-in: rd-pop-in 160ms ease-out;
+  --animate-sheet-in: rd-sheet-in 200ms ease-out;
+  --animate-drawer-in: rd-drawer-in 200ms ease-out;
+
+  @keyframes rd-fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes rd-pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px) scale(0.98);
+    }
+  }
+  @keyframes rd-sheet-in {
+    from {
+      transform: translateY(12%);
+      opacity: 0;
+    }
+  }
+  @keyframes rd-drawer-in {
+    from {
+      transform: translateX(-100%);
+    }
+  }
+}
+
+/* Shadows come from tokens so dark mode (no shadows, borders only) needs no per-component rule. */
+@utility shadow-card {
+  box-shadow: var(--shadow-sm);
+}
+
+@utility shadow-overlay {
+  box-shadow: var(--shadow);
+}
+
 @layer base {
   html {
     font-family: var(--font-sans);
     -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 
   body {
@@ -164,12 +204,42 @@
     color: var(--text);
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv11', 'ss01';
   }
 
-  /* One visible focus ring everywhere; components only add to it. */
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  code,
+  kbd,
+  samp {
+    font-family: var(--font-mono);
+    font-size: 0.9375em;
+  }
+
+  ::selection {
+    background: var(--primary-soft);
+    color: var(--text);
+  }
+
+  /* One visible focus ring everywhere (2 px, offset 2 px); components only add to it. */
   :focus-visible {
     outline: 2px solid var(--focus);
     outline-offset: 2px;
+  }
+
+  /* Headings that receive focus on navigation do not need a ring: the page change is the cue. */
+  h1[tabindex='-1']:focus,
+  main[tabindex='-1']:focus {
+    outline: none;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -179,8 +249,15 @@
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
     }
   }
+}
+
+/* Sonner toasts (unstyled) take the RushDay surface, text and status tokens. */
+[data-sonner-toaster] {
+  --width: min(380px, calc(100vw - 32px));
+  font-family: var(--font-sans);
 }
 
 @media print {

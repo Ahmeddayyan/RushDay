@@ -14,13 +14,22 @@ export interface SpinnerProps {
   size?: SpinnerSize
   /** Announced to assistive technology; keep it specific ("Loading modules"). */
   label?: string
+  /** A spinner inside something that already announces its busy state (a loading button). */
+  decorative?: boolean
   className?: string
 }
 
-export function Spinner({ size = 'md', label = 'Loading', className }: SpinnerProps) {
+export function Spinner({
+  size = 'md',
+  label = 'Loading',
+  decorative = false,
+  className,
+}: SpinnerProps) {
+  const icon = <LoaderCircle aria-hidden="true" className={cn('animate-spin', sizes[size])} />
+  if (decorative) return <span className={cn('inline-flex text-muted', className)}>{icon}</span>
   return (
     <span role="status" className={cn('inline-flex items-center text-muted', className)}>
-      <LoaderCircle aria-hidden="true" className={cn('animate-spin', sizes[size])} />
+      {icon}
       <span className="sr-only">{label}</span>
     </span>
   )

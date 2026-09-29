@@ -17,5 +17,7 @@ export function ButtonLink({
   className,
   ...props
 }: ButtonLinkProps) {
-  return <Link className={cn(buttonStyles({ variant, size }), className)} {...props} />
+  return (
+    <Link className={cn(buttonStyles({ variant, size }), 'no-underline', className)} {...props} />
+  )
 }

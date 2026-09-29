@@ -74,7 +74,10 @@ mandatory reason recorded on every action:
 
 - **Override-enrol**: ignores the window and the credit limit; module capacity still applies unless `forceCapacity`
   is set, which raises the module's capacity by exactly one place **and only when the module is already full** (it
-  is not a general "ignore capacity" switch).
+  is not a general "ignore capacity" switch). Once a module's marks for the current year have been submitted,
+  scheduled or published, nobody can join it, not even by override: the request is refused with `module-locked`.
+  Return the module to draft first (section 2), enrol the student, and ask the leader to enter their mark and
+  resubmit. This rule exists so that no student's mark can be left stranded outside a publication.
 - **Override-withdraw**: withdraws a student from a module regardless of the withdrawal deadline, with a reason.
 - **Trim to capacity** (`/admin/modules/{code}`): for a module that has drifted over capacity (the live database
   inherited an oversold `CS3099` from v0, and the ops page flags any module where `enrolledCount > capacity` as a

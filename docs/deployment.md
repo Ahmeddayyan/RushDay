@@ -129,7 +129,18 @@ unbuilt extension point rather than leaving it unmentioned.
 ## 6. The database role: `rushday_app`
 
 The application never connects as the Neon owner role (`neondb_owner`). Run once, connected as the owner (Neon's SQL
-editor, or `psql` against the owner connection string):
+editor, or `psql` against the owner connection string). In Neon's SQL editor, click **New Query** first so the editor
+is empty (it opens with sample statements that would otherwise run too), and paste only the SQL statements below, not
+the surrounding fence lines. Generate the password rather than choosing one, and never paste it anywhere else:
+
+```powershell
+[guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+```
+
+If `CREATE ROLE` reports that the role already exists, run `ALTER ROLE rushday_app WITH LOGIN PASSWORD '...';`
+instead, then the grants. Afterwards, `SELECT rolname FROM pg_roles WHERE rolname = 'rushday_app';` must return one
+row. PostgreSQL answers a login for a role that does not exist with "password authentication failed", so that error
+after switching `ConnectionStrings__RushDay` usually means the role was never created.
 
 ```sql
 CREATE ROLE rushday_app LOGIN PASSWORD '<a strong, generated password>';

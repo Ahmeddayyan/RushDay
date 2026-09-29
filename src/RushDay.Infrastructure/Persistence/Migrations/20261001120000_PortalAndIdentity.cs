@@ -549,8 +549,8 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 type: "timestamp with time zone",
                 nullable: true);
 
-            migrationBuilder.Sql("UPDATE modules SET department = left(code, 2)");
-            migrationBuilder.Sql("ALTER TABLE modules ALTER COLUMN department DROP DEFAULT");
+            migrationBuilder.Sql("UPDATE modules SET department = left(code, 2);");
+            migrationBuilder.Sql("ALTER TABLE modules ALTER COLUMN department DROP DEFAULT;");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_modules_capacity_positive",
@@ -590,7 +590,7 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 nullable: false,
                 defaultValue: "2025/26");
 
-            migrationBuilder.Sql("ALTER TABLE enrolments ALTER COLUMN academic_year DROP DEFAULT");
+            migrationBuilder.Sql("ALTER TABLE enrolments ALTER COLUMN academic_year DROP DEFAULT;");
 
             migrationBuilder.AddColumn<DateTimeOffset>(
                 name: "withdrawn_at",
@@ -674,7 +674,7 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 nullable: false,
                 defaultValue: "Published");
 
-            migrationBuilder.Sql("ALTER TABLE grades ALTER COLUMN status DROP DEFAULT");
+            migrationBuilder.Sql("ALTER TABLE grades ALTER COLUMN status DROP DEFAULT;");
 
             migrationBuilder.AddColumn<Guid>(
                 name: "publication_id",
@@ -701,7 +701,7 @@ namespace RushDay.Infrastructure.Persistence.Migrations
                 nullable: false,
                 defaultValueSql: "now()");
 
-            migrationBuilder.Sql("ALTER TABLE grades ALTER COLUMN updated_at DROP DEFAULT");
+            migrationBuilder.Sql("ALTER TABLE grades ALTER COLUMN updated_at DROP DEFAULT;");
 
             migrationBuilder.AddColumn<int>(
                 name: "version",

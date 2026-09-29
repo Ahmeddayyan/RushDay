@@ -556,12 +556,14 @@ run only through `scripts/run-api.ps1` (`06-implementation-plan.md` section 1 ru
    reconciliation, and for the `ResultsGovernance` part (section 5a: the column, the leader demotion ending in `;`,
    the two indexes, the foreign key). (`dotnet ef` runs through `dotnet exec` and works under Smart App Control; if it
    is ever blocked, as it was for a freshly built Debug `RushDay.Domain.dll` on 2026-09-29, run it with `--no-build
-   --configuration Release`.) Known limitation, not changed because `PortalAndIdentity` stays as rehearsed: applied
-   through `psql`, the script stops at `PortalAndIdentity`'s `Sql("UPDATE modules SET department = left(code, 2)")`
-   block: that statement and the four `... DROP DEFAULT` ones (`department`, `academic_year`, `grades.status`,
-   `grades.updated_at`) have no terminating semicolon, so each generated `DO` block's `END IF` is a syntax error.
-   Every deployment migrates through `MigrateAsync`, which is unaffected; a DBA who applies the script by hand adds
-   those five semicolons first.
+   --configuration Release`.) Fixed 2026-09-29 (review of the order-dependent `MigrationOnSeededDatabaseTests` failure
+   in GitHub Actions run 36567479154): `PortalAndIdentity`'s `Sql("UPDATE modules SET department = left(code, 2)")`
+   block and the four `... DROP DEFAULT` ones (`department`, `academic_year`, `grades.status`, `grades.updated_at`)
+   now end in `;`, so applied through `psql` the generated script runs straight through with no manual edits (each
+   statement's generated `DO` block closes on `END IF;` instead of erroring on a missing terminator). Verified against
+   a fresh `TEMPLATE rushday` clone (`CREATE DATABASE rushday_check TEMPLATE rushday OWNER rushday`); `MigrateAsync`
+   and the running model are unaffected (the fix only adds semicolons `migrationBuilder.Sql` was already missing, not
+   a model or behaviour change), confirmed by `dotnet ef migrations has-pending-model-changes` still reporting none.
 5. `scripts/reset-db.ps1` (drop, recreate, `run-api.ps1 -Args "--migrate-and-seed"`) still converges to identical data
    from empty.
 6. Integration test `Persistence/MigrationOnSeededDatabaseTests` (stage S11) automates 1–3: applies `InitialCreate`,

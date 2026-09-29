@@ -113,8 +113,18 @@ public static class StartupBackfills
     private const string RewriteDemoLecturerHashSql =
         "UPDATE users SET password_hash = @hash WHERE is_demo AND lecturer_id IS NOT NULL";
 
+    /// <summary>
+    /// Scoped to the one bootstrap-named demo admin (<see cref="DemoAccounts.AdminUsername"/>), not "every is_demo
+    /// admin": a demo administrator can provision another admin account through the ordinary account routes (S6),
+    /// which is also flagged <c>is_demo</c> (so it is read-only and dies with the demo) but keeps its own,
+    /// independently generated password. Matching on the admin role instead of the username would let this step pick
+    /// that account's hash as the "reference" whenever <c>ORDER BY created_at</c> has more than one candidate and no
+    /// tiebreaker - Postgres does not guarantee which tied row it returns - and, on a bad pick, stamp every is_demo
+    /// admin row (including the provisioned one) with a freshly hashed copy of the shared demo admin password,
+    /// silently overwriting that account's real password on a start that should have changed nothing.
+    /// </summary>
     private const string RewriteDemoAdminHashSql =
-        "UPDATE users SET password_hash = @hash WHERE is_demo AND EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = users.id AND ur.role_id = @adminRoleId)";
+        "UPDATE users SET password_hash = @hash WHERE is_demo AND normalized_user_name = @adminUsername";
 
     /// <summary>Repairs every demo login a visitor may have spoiled; a redeploy of the public demo heals it.</summary>
     private const string HealDemoUsersSql = """
@@ -565,20 +575,15 @@ public static class StartupBackfills
     private static async Task<StepOutcome> EnsureDemoAccountsAsync(RushDayDbContext db, CancellationToken cancellationToken)
     {
         var hasher = PasswordHashing.Create();
-        var adminRoleId = RushDayRoles.AdminId;
 
         var storedStudentHash = await StoredHashAsync(db, DemoAccounts.StudentUsername, cancellationToken);
         var storedLecturerHash = await StoredHashAsync(db, DemoAccounts.LecturerUsername, cancellationToken);
-        var storedAdminHash = await db.Users.AsNoTracking()
-            .Where(u => u.IsDemo && db.UserRoles.Any(ur => ur.UserId == u.Id && ur.RoleId == adminRoleId))
-            .OrderBy(u => u.CreatedAt)
-            .Select(u => u.PasswordHash)
-            .FirstOrDefaultAsync(cancellationToken);
+        var storedAdminHash = await StoredHashAsync(db, DemoAccounts.AdminUsername, cancellationToken);
 
         var rows = 0;
         var (studentHash, studentRewrites) = await EnsureRoleHashAsync(db, hasher, storedStudentHash, DemoAccounts.StudentPassword, RewriteDemoStudentHashSql, [], cancellationToken);
         var (lecturerHash, lecturerRewrites) = await EnsureRoleHashAsync(db, hasher, storedLecturerHash, DemoAccounts.LecturerPassword, RewriteDemoLecturerHashSql, [], cancellationToken);
-        var (_, adminRewrites) = await EnsureRoleHashAsync(db, hasher, storedAdminHash, DemoAccounts.AdminPassword, RewriteDemoAdminHashSql, [new NpgsqlParameter("adminRoleId", adminRoleId)], cancellationToken);
+        var (_, adminRewrites) = await EnsureRoleHashAsync(db, hasher, storedAdminHash, DemoAccounts.AdminPassword, RewriteDemoAdminHashSql, [new NpgsqlParameter("adminUsername", DemoAccounts.AdminUsername.ToUpperInvariant())], cancellationToken);
         rows += studentRewrites + lecturerRewrites + adminRewrites;
 
         rows += await db.Database.ExecuteSqlRawAsync(DemoStudentUsersSql, [new NpgsqlParameter("studentHash", studentHash)], cancellationToken);

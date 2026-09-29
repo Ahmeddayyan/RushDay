@@ -40,7 +40,7 @@ public sealed class MigrationOnSeededDatabaseTests(RushDayApiFactory factory)
         var usersAfterSecond = await db.Users.CountAsync();
 
         Assert.Equal(usersAfterFirst, usersAfterSecond);
-        Assert.All(second, r => Assert.Equal(0, r.RowsAffected));
+        PersistenceTestSupport.AssertAllConverged(second);
 
         // Section 9 step 4: the running model matches the latest migration exactly (an in-process equivalent of
         // `dotnet ef migrations has-pending-model-changes`, so this needs no database round trip at all).
@@ -124,7 +124,7 @@ public sealed class MigrationOnSeededDatabaseTests(RushDayApiFactory factory)
 
             // A further run with demo on is fully idempotent: nothing left to heal.
             var steady = await StartupBackfills.RunAsync(db, onOptions, factory.Clock, NullLogger.Instance);
-            Assert.All(steady, r => Assert.Equal(0, r.RowsAffected));
+            PersistenceTestSupport.AssertAllConverged(steady);
         }
         finally
         {
@@ -272,6 +272,55 @@ public sealed class MigrationOnSeededDatabaseTests(RushDayApiFactory factory)
         var rows = await db.Users.AsNoTracking().Where(u => u.IsDemo).Select(u => new { u.Id, u.DisabledAt, u.SecurityStamp }).ToListAsync();
         return rows.ToDictionary(r => r.Id, r => (r.DisabledAt, r.SecurityStamp ?? string.Empty));
     }
+
+    /// <summary>
+    /// Root cause of the order-dependent CI failure (GitHub Actions run 36567479154, commit 81df00d):
+    /// <c>demo_accounts</c>'s admin hash-reuse picked its reference from "any <c>is_demo</c> administrator, earliest
+    /// <c>created_at</c>" rather than the one named bootstrap account (<see cref="DemoAccounts.AdminUsername"/>), unlike
+    /// the student and lecturer lookups, which are keyed by username (<see cref="StoredHashAsync"/>). A demo
+    /// administrator can provision another admin account through the ordinary account routes
+    /// (<see cref="RushDay.IntegrationTests.Auth.DemoActorTests.Accounts_a_demo_administrator_provisions_are_demo_accounts"/>):
+    /// the new account is also <c>is_demo</c> (so it is read-only and dies with the demo) but keeps its own,
+    /// independently generated password. With two such rows and no tiebreaker, Postgres does not guarantee which one
+    /// <c>OrderBy(created_at).First()</c> returns on any given run - it picked the bootstrap admin on one of the two
+    /// back-to-back calls the idempotency test makes and the provisioned account on the other - so a run could decide
+    /// the "reference" hash does not verify and stamp every <c>is_demo</c> admin row, including the provisioned one,
+    /// with a freshly hashed copy of the shared demo admin password: not idempotent, and a real password silently
+    /// overwritten on a start that should have changed nothing. This test reaches the same state a live public demo
+    /// can reach (a demo actor provisioning an account), then forces the same bad pick deterministically - by giving
+    /// the provisioned account an earlier <c>created_at</c> - instead of depending on suite ordering or on how
+    /// Postgres happens to break the tie.
+    /// </summary>
+    [Fact]
+    public async Task An_admin_a_demo_actor_provisions_keeps_its_own_password_across_backfills()
+    {
+        await using var host = factory.Derive();
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<RushDayDbContext>();
+        var options = PersistenceTestSupport.BackfillOptions(demoEnabled: true);
+
+        // Known state first (this suite runs the demo admin through demo-off elsewhere, e.g.
+        // Bootstrap_password_rejected_by_policy_is_not_used's own demoEnabled: false call disables every is_demo
+        // account as a side effect of exercising step 9): heal it here rather than depend on suite order.
+        await StartupBackfills.RunAsync(db, options, factory.Clock, NullLogger.Instance);
+
+        await using var probe = await ProbeApp.StartAsync(factory);
+        using var demoAdmin = await probe.LoginAsync(DemoAccounts.AdminUsername, DemoAccounts.AdminPassword);
+        using var response = await demoAdmin.PostAsync("/api/probe/accounts", null);
+        var provisionedId = (await response.ReadJsonAsync()).GetProperty("id").GetGuid();
+        Assert.True((await factory.ReadUserAsync(provisionedId)).IsDemo);
+
+        // Force the provisioned account to sort first, deterministically, instead of hoping the suite reproduces
+        // whichever tie-break Postgres would otherwise apply.
+        await db.Database.ExecuteSqlAsync($"UPDATE users SET created_at = created_at - interval '1 hour' WHERE id = {provisionedId}");
+        var hashBefore = (await factory.ReadUserAsync(provisionedId)).PasswordHash;
+
+        await StartupBackfills.RunAsync(db, options, factory.Clock, NullLogger.Instance);
+        var second = await StartupBackfills.RunAsync(db, options, factory.Clock, NullLogger.Instance);
+
+        PersistenceTestSupport.AssertAllConverged(second);
+        Assert.Equal(hashBefore, (await factory.ReadUserAsync(provisionedId)).PasswordHash);
+    }
 }
 
 /// <summary>Shared by <see cref="MigrationOnSeededDatabaseTests"/> and <see cref="BackfillRecoveryTests"/>.</summary>
@@ -288,4 +337,12 @@ internal static class PersistenceTestSupport
         TimeZone = StartupBackfillOptions.DefaultTimeZone,
         SeedResultsDay = RushDayApiFactory.SeedResultsDay,
     };
+
+    /// <summary>
+    /// A converged run must affect 0 rows everywhere (01-domain-and-data.md section 6); names the offending step
+    /// first so a failure here (like GitHub Actions run 36567479154's "demo_accounts, RowsAffected = 2") says which
+    /// step broke idempotency without a trip through the notes column.
+    /// </summary>
+    public static void AssertAllConverged(IReadOnlyList<BackfillResult> results) =>
+        Assert.All(results, r => Assert.True(r.RowsAffected == 0, $"{r.Name}: expected 0 rows affected on a converged run, got {r.RowsAffected} ({r.Notes ?? "no notes"})."));
 }

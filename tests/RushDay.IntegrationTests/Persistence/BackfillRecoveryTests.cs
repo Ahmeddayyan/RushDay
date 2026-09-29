@@ -88,7 +88,7 @@ public sealed class BackfillRecoveryTests(RushDayApiFactory factory)
         // Restart-after-success: every step is idempotent by design, so one more run affects zero rows everywhere.
         clock.Advance(TimeSpan.FromMinutes(1));
         var steady = await StartupBackfills.RunAsync(db, options, clock, NullLogger.Instance);
-        Assert.All(steady, r => Assert.Equal(0, r.RowsAffected));
+        PersistenceTestSupport.AssertAllConverged(steady);
     }
 
     private static Task<Dictionary<string, DateTimeOffset>> CompletedAtByStepAsync(RushDayDbContext db) =>

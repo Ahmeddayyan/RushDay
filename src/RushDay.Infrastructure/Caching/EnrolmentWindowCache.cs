@@ -23,7 +23,7 @@ public sealed record EnrolmentWindowSnapshot(
 }
 
 /// <summary><c>windows:all</c>, 60 s: every window of every year. Invalidated by the admin window routes (S6).</summary>
-public sealed class EnrolmentWindowCache(HybridCache cache, RushDayDbContext db, ICacheMetrics metrics)
+public sealed class EnrolmentWindowCache(HybridCache cache, IDbContextFactory<RushDayDbContext> contexts, ICacheMetrics metrics)
 {
     public static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(60);
 
@@ -62,12 +62,16 @@ public sealed class EnrolmentWindowCache(HybridCache cache, RushDayDbContext db,
     public ValueTask InvalidateAsync(CancellationToken cancellationToken = default) =>
         cache.RemoveAsync(CacheKeys.Windows, cancellationToken);
 
-    private async Task<EnrolmentWindowSnapshot[]> LoadAsync(CancellationToken cancellationToken) =>
-        await db.EnrolmentWindows.AsNoTracking()
+    // Its own context: the fill may outlive the request that started it (04-performance-and-ops.md section 4).
+    private async Task<EnrolmentWindowSnapshot[]> LoadAsync(CancellationToken cancellationToken)
+    {
+        await using var db = await contexts.CreateDbContextAsync(cancellationToken);
+        return await db.EnrolmentWindows.AsNoTracking()
             .OrderByDescending(w => w.AcademicYear)
             .ThenBy(w => w.Semester)
             .Select(w => new EnrolmentWindowSnapshot(w.Id, w.AcademicYear, w.Semester, w.OpensAt, w.ClosesAt, w.WithdrawalDeadlineAt))
             .ToArrayAsync(cancellationToken);
+    }
 
     [ImmutableObject(true)]
     private sealed record WindowsHolder(IReadOnlyList<EnrolmentWindowSnapshot> Windows);

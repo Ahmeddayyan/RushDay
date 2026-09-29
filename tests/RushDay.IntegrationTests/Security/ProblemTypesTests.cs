@@ -127,6 +127,22 @@ public sealed partial class ProblemTypesTests(RushDayApiFactory factory)
         Assert.True(errors.TryGetProperty("password", out _), errors.ToString());
     }
 
+    /// <summary>A body that does not bind is the caller's mistake in every environment: 400, never a 500 (the main host is Development).</summary>
+    [Theory]
+    [InlineData("{\"username\": \"s000001\", \"password\": ")]
+    [InlineData("")]
+    [InlineData("{\"username\": 5, \"password\": \"x\"}")]
+    [InlineData("[1, 2]")]
+    public async Task Unbindable_bodies_are_validation_problems(string body)
+    {
+        using var client = factory.CreateCookieClient();
+        await client.RefreshCsrfAsync();
+
+        using var response = await client.PostAsync("/api/auth/login", new StringContent(body, Encoding.UTF8, "application/json"));
+
+        await response.AssertProblemAsync(HttpStatusCode.BadRequest, "validation");
+    }
+
     [Fact]
     public async Task A_mfa_code_must_be_six_digits()
     {

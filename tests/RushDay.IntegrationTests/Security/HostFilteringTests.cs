@@ -38,6 +38,28 @@ public sealed class HostFilteringTests(RushDayApiFactory factory)
         Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
     }
 
+    /// <summary>A custom domain in Security:AllowedHosts must not lock out Render's health check, which uses its own name.</summary>
+    [Fact]
+    public async Task Production_keeps_the_render_hostname_alongside_configured_hosts()
+    {
+        await using var production = factory.Production(b =>
+        {
+            b.UseSetting("Security:AllowedHosts", "portal.example.ac.uk");
+            b.UseSetting("RENDER_EXTERNAL_HOSTNAME", "rushday-api.onrender.com");
+        });
+
+        foreach (var host in new[] { "https://portal.example.ac.uk", "https://rushday-api.onrender.com" })
+        {
+            using var client = production.CreateCookieClient(baseAddress: new Uri(host));
+            using var ok = await client.GetAsync("/api/health/live");
+            Assert.True(ok.StatusCode == HttpStatusCode.OK, $"{host} answered {(int)ok.StatusCode}.");
+        }
+
+        using var other = production.CreateCookieClient(baseAddress: new Uri("https://evil.example"));
+        using var refused = await other.GetAsync("/api/health/live");
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+    }
+
     [Fact]
     public async Task Development_accepts_any_host()
     {

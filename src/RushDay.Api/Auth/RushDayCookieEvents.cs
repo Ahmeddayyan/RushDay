@@ -10,7 +10,8 @@ namespace RushDay.Api.Auth;
 /// <summary>
 /// Per-role session lifetimes (02-api.md section 2.1) enforced on every authenticated request:
 /// (1) reject when <c>now - iat</c> exceeds the absolute lifetime or <c>now - las</c> the sliding one;
-/// (2) the security-stamp validator; (3) refresh <c>las</c> at most once a minute and renew the cookie.
+/// (2) the security-stamp validator, due when <c>now - svt</c> exceeds the interval (never measured from the ticket's
+/// issue time, which step 3 resets); (3) refresh <c>las</c> at most once a minute and renew the cookie.
 /// Students and lecturers: 8 h sliding / 12 h absolute; administrators: 60 min / 8 h.
 /// </summary>
 public static class RushDayCookieEvents

@@ -11,7 +11,7 @@ namespace RushDay.Infrastructure.Caching;
 /// for every lecturer added or removed (S6). An unknown lecturer or code yields an empty set, so a non-member always
 /// gets 403, never 404.
 /// </summary>
-public sealed class LecturerModuleCache(HybridCache cache, RushDayDbContext db, ICacheMetrics metrics)
+public sealed class LecturerModuleCache(HybridCache cache, IDbContextFactory<RushDayDbContext> contexts, ICacheMetrics metrics)
 {
     public static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(60);
 
@@ -36,12 +36,16 @@ public sealed class LecturerModuleCache(HybridCache cache, RushDayDbContext db, 
     public ValueTask InvalidateAsync(Guid lecturerId, CancellationToken cancellationToken = default) =>
         cache.RemoveAsync(CacheKeys.LecturerModules(lecturerId), cancellationToken);
 
-    private async Task<string[]> LoadAsync(Guid lecturerId, CancellationToken cancellationToken) =>
-        await db.ModuleLecturers.AsNoTracking()
+    // Its own context: the fill may outlive the request that started it (04-performance-and-ops.md section 4).
+    private async Task<string[]> LoadAsync(Guid lecturerId, CancellationToken cancellationToken)
+    {
+        await using var db = await contexts.CreateDbContextAsync(cancellationToken);
+        return await db.ModuleLecturers.AsNoTracking()
             .Where(ml => ml.LecturerId == lecturerId)
             .Join(db.Modules, ml => ml.ModuleId, m => m.Id, (_, m) => m.Code)
             .OrderBy(code => code)
             .ToArrayAsync(cancellationToken);
+    }
 
     [ImmutableObject(true)]
     private sealed record CodesHolder(IReadOnlyList<string> Codes);

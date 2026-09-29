@@ -12,10 +12,13 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Npgsql;
 using RushDay.Api.Auth;
+using RushDay.Api.Observability;
 using RushDay.Api.Startup;
 using RushDay.Domain.Users;
 using RushDay.Infrastructure.Accounts;
+using RushDay.Infrastructure.Caching;
 using RushDay.Infrastructure.Identity;
 using RushDay.Infrastructure.Persistence;
 
@@ -92,7 +95,10 @@ public static class TestClients
         return body;
     }
 
-    /// <summary>The MFA-aware variant: password → <c>{ mfaRequired }</c> → a TOTP code from <paramref name="sharedKey"/> → <c>Me</c>.</summary>
+    /// <summary>
+    /// The MFA-aware variant: password → <c>{ mfaRequired }</c> → a TOTP code from <paramref name="sharedKey"/> → <c>Me</c>.
+    /// The code is <see cref="Totp.FreshCode"/>: the server refuses a time step it has already accepted.
+    /// </summary>
     public static async Task<JsonElement> LoginWithMfaAsync(this HttpClient client, string username, string password, string sharedKey)
     {
         await client.RefreshCsrfAsync();
@@ -102,7 +108,7 @@ public static class TestClients
         Assert.True(challenge.GetProperty("mfaRequired").GetBoolean());
         client.UseCsrf(challenge.GetProperty("csrfToken").GetString()!);
 
-        using var verify = await client.PostAsJsonAsync("/api/auth/mfa/verify", new { code = Totp.Code(sharedKey, DateTimeOffset.UtcNow) });
+        using var verify = await client.PostAsJsonAsync("/api/auth/mfa/verify", new { code = Totp.FreshCode(sharedKey) });
         var me = await verify.ReadJsonAsync();
         Assert.True(verify.StatusCode == HttpStatusCode.OK, $"MFA verify answered {(int)verify.StatusCode}: {me}");
         client.UseCsrf(me.GetProperty("csrfToken").GetString()!);
@@ -150,13 +156,37 @@ public static class TestClients
         response.Headers.TryGetValues("Set-Cookie", out var values) ? [.. values] : [];
 }
 
-/// <summary>RFC 6238 TOTP (SHA-1, 30-second steps, 6 digits) for tests; Identity's authenticator provider uses the real clock.</summary>
+/// <summary>
+/// RFC 6238 TOTP (SHA-1, 30-second steps, 6 digits) for tests. The server's provider uses the real clock (never the
+/// factory's fake one), accepts ±2 steps and refuses a step it has already accepted for the account.
+/// </summary>
 public static class Totp
 {
-    public static string Code(string sharedKey, DateTimeOffset at)
+    private const int StepSeconds = 30;
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> LastIssued = new(StringComparer.Ordinal);
+
+    public static string Code(string sharedKey, DateTimeOffset at) => CodeAt(sharedKey, at.ToUnixTimeSeconds() / StepSeconds);
+
+    /// <summary>
+    /// A code for a time step later than any this helper has handed out for <paramref name="sharedKey"/>, still inside
+    /// the server's ±2-step window, so successive calls never replay a step the server may have accepted.
+    /// </summary>
+    public static string FreshCode(string sharedKey)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / StepSeconds;
+        var step = LastIssued.AddOrUpdate(sharedKey, now, (_, last) => Math.Max(now, last + 1));
+        if (step > now + 2)
+        {
+            throw new InvalidOperationException("More than three fresh codes for one key within a step; the server would refuse the next.");
+        }
+
+        return CodeAt(sharedKey, step);
+    }
+
+    private static string CodeAt(string sharedKey, long counter)
     {
         var key = Base32Decode(sharedKey.Replace(" ", string.Empty, StringComparison.Ordinal).ToUpperInvariant());
-        var counter = at.ToUnixTimeSeconds() / 30;
         var message = BitConverter.GetBytes(counter);
         if (BitConverter.IsLittleEndian)
         {
@@ -202,28 +232,51 @@ public sealed class ProbeApp : IAsyncDisposable
     public const string StudentPath = "/api/probe/student";
     public const string AdminPath = "/api/probe/admin";
 
+    /// <summary>Anonymous; throws an ordinary exception (500 <c>internal-error</c>).</summary>
+    public const string ThrowPath = "/api/probe/throw";
+
+    /// <summary>Anonymous; throws a transient <see cref="NpgsqlException"/> (503 <c>server-busy</c>).</summary>
+    public const string TransientPath = "/api/probe/transient";
+
+    /// <summary>Authenticated; reads the settings cache, runs one query and answers the request's command count.</summary>
+    public const string CommandsPath = "/api/probe/commands";
+
     private readonly WebApplication _app;
 
     private ProbeApp(WebApplication app) => _app = app;
+
+    public IServiceProvider Services => _app.Services;
 
     /// <summary>Behind <c>LecturerOnly</c> and <c>TeachesModule</c>, like S6's <c>/api/lecturer/modules/{code}/*</c>.</summary>
     public static string ModulePath(string code) => "/api/probe/modules/" + code;
 
     /// <param name="factory">Supplies the database, settings and clock.</param>
     /// <param name="webRoot">A web root to serve instead of none (the test output has no <c>wwwroot</c>).</param>
-    public static async Task<ProbeApp> StartAsync(RushDayApiFactory factory, string? webRoot = null)
+    /// <param name="environment">Development unless stated; Production also gets the test KEK.</param>
+    /// <param name="configure">Runs after the app's own registrations (fake logging, overrides).</param>
+    public static async Task<ProbeApp> StartAsync(RushDayApiFactory factory, string? webRoot = null, string? environment = null, Action<WebApplicationBuilder>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
-            EnvironmentName = Environments.Development,
+            EnvironmentName = environment ?? Environments.Development,
             ContentRootPath = AppContext.BaseDirectory,
             WebRootPath = webRoot,
         });
         builder.WebHost.UseTestServer();
         builder.Configuration.AddInMemoryCollection(factory.Settings(startupWork: false));
+        if (builder.Environment.IsProduction())
+        {
+            builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["DataProtection:KeyEncryptionKey"] = RushDayApiFactory.TestKeyEncryptionKey,
+                ["Demo:PublicDemoAcknowledged"] = "true",
+            });
+        }
+
         builder.AddRushDayServices();
         builder.Services.AddSingleton<TimeProvider>(factory.Clock);
+        configure?.Invoke(builder);
 
         var app = builder.Build();
         app.UseRushDayPipeline();
@@ -234,12 +287,33 @@ public sealed class ProbeApp : IAsyncDisposable
         api.MapGroup("/probe/modules").RequireAuthorization(Policies.LecturerOnly)
             .MapGet("/{code:regex(^[A-Z]{{2}}\\d{{4}}$)}", (string code) => TypedResults.Ok(new { code }))
             .RequireAuthorization(Policies.TeachesModule);
+        api.MapGet("/probe/throw", IResult () => throw new InvalidOperationException("probe failure")).AllowAnonymous();
+        api.MapGet("/probe/transient", IResult () => throw new NpgsqlException("probe transient failure", new TimeoutException())).AllowAnonymous();
+        api.MapGet("/probe/commands", async (SettingsCache settings, RushDayDbContext db, DbCommandCounter counter, CancellationToken cancellationToken) =>
+        {
+            _ = await settings.GetAsync(cancellationToken);
+            _ = await db.Modules.CountAsync(cancellationToken);
+            return TypedResults.Ok(new { commands = counter.Count });
+        });
+
+        // What S6's account routes will do, so the demo-actor rule can be observed through a real session.
+        var accounts = api.MapGroup("/probe/accounts").RequireAuthorization(Policies.AdminOnly);
+        accounts.MapPost("/", async (AccountService service, CancellationToken cancellationToken) =>
+        {
+            var result = await service.ProvisionAsync(new ProvisionAccountRequest(TestAccounts.NewUsername("v"), "Visitor Account", RushDayRoles.Admin), cancellationToken);
+            return TypedResults.Ok(new { id = result.Value!.User.Id, isDemo = result.Value.User.IsDemo, mustChangePassword = result.Value.User.MustChangePassword });
+        });
+        accounts.MapPost("/{id:guid}/lock", async (Guid id, AccountService service, CancellationToken cancellationToken) =>
+        {
+            var result = await service.LockAsync(id, cancellationToken);
+            return TypedResults.Ok(new { error = result.Error.ToString() });
+        });
         await app.StartAsync();
         return new ProbeApp(app);
     }
 
-    public HttpClient CreateClient() =>
-        new(new CookieContainerHandler { InnerHandler = _app.GetTestServer().CreateHandler() }) { BaseAddress = TestClients.LocalHttp };
+    public HttpClient CreateClient(Uri? baseAddress = null) =>
+        new(new CookieContainerHandler { InnerHandler = _app.GetTestServer().CreateHandler() }) { BaseAddress = baseAddress ?? TestClients.LocalHttp };
 
     public async Task<HttpClient> LoginAsync(string username, string password)
     {

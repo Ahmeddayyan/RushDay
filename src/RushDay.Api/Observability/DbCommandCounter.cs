@@ -1,13 +1,15 @@
 using System.Data.Common;
 using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using RushDay.Infrastructure.Caching;
 
 namespace RushDay.Api.Observability;
 
 /// <summary>
-/// Counts the database commands a request executes (04-performance-and-ops.md section 6.1), so
-/// <c>rushday.dashboard.queries</c> is measured rather than asserted by hand. <c>RequestLoggingMiddleware</c> calls
-/// <see cref="Reset"/> at the start of each request; handlers read <see cref="Count"/>.
+/// Counts the database commands a request's endpoint executes (04-performance-and-ops.md section 6.1), so
+/// <c>rushday.dashboard.queries</c> is measured rather than asserted by hand. <c>EndpointCommandCounterMiddleware</c>
+/// calls <see cref="Reset"/> after authentication and authorization, so the security-stamp re-check is not counted;
+/// commands issued inside a cache factory (<see cref="CacheFill"/>) are skipped too. Handlers read <see cref="Count"/>.
 /// </summary>
 /// <remarks>
 /// The async-local holds a box rather than a bare <c>int</c>: a value assigned inside an awaited EF method would not
@@ -61,7 +63,7 @@ public sealed class DbCommandCounter : DbCommandInterceptor
 
     private void Increment()
     {
-        if (_current.Value is { } box)
+        if (!CacheFill.InProgress && _current.Value is { } box)
         {
             Interlocked.Increment(ref box.Value);
         }

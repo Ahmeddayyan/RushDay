@@ -12,6 +12,7 @@ using RushDay.Api.Options;
 using RushDay.Api.Security;
 using RushDay.Api.Startup;
 using RushDay.Domain.Audit;
+using RushDay.Domain.Users;
 using RushDay.Infrastructure.Accounts;
 using RushDay.Infrastructure.Audit;
 using RushDay.Infrastructure.Identity;
@@ -106,61 +107,81 @@ public static class AuthEndpoints
     private static async Task<IResult> LoginAsync(LoginRequest request, [AsParameters] AuthServices s)
     {
         var http = s.Http;
-        var clientIp = RateLimitPolicies.ClientIp(http);
+        var clientKey = RateLimitPolicies.ClientKey(http);
         var normalized = s.Users.NormalizeName(request.Username) ?? request.Username.ToUpperInvariant();
         var usernameHash = LoginThrottle.UsernameHash(normalized);
-        var ipHash = s.IpHasher.Hash(clientIp);
+        var ipHash = s.IpHasher.Hash(RateLimitPolicies.ClientIp(http));
 
-        // 2. Per-username window and per-IP failure window, before anything else is touched.
-        var gate = s.Throttle.TryAcquire(normalized, clientIp);
-        if (!gate.Allowed)
+        // 2. Per-address and per-username failure windows, before anything else is touched. A permit is reserved now
+        // and refunded on success, so only failures stay counted and concurrent attempts cannot overrun either window.
+        using var attempt = s.Throttle.TryBegin(normalized, clientKey);
+        if (!attempt.Allowed)
         {
             s.Metrics.LoadShed(RushDayMetrics.ShedPolicies.Login);
             s.Log.LogInformation("Login outcome {Outcome} for {UsernameHash} from {IpHash}", "rate_limited", usernameHash, ipHash);
-            return ProblemResults.ProblemWithRetryAfter(ProblemTypes.RateLimited, gate.RetryAfterSeconds);
+            return ProblemResults.ProblemWithRetryAfter(ProblemTypes.RateLimited, attempt.RetryAfterSeconds);
         }
 
         var user = await s.Users.FindByNameAsync(request.Username);
 
-        // 4. The CPU guard covers every PBKDF2 operation, the dummy one included.
-        using var lease = await s.Throttle.Cpu.AcquireAsync(1, http.RequestAborted);
-        if (!lease.IsAcquired)
+        // 3. Unknown, disabled and demo-disabled accounts cost one PBKDF2 like a wrong password, and answer the same.
+        var unusable = user is null || user.DisabledAt is not null || (user.IsDemo && !s.Demo.Value.Enabled);
+        SignInResult? result = null;
+
+        // 4. The CPU guard covers every PBKDF2 operation, the dummy one included, and nothing after it.
+        using (var lease = await s.Throttle.Cpu.AcquireAsync(1, http.RequestAborted))
         {
-            s.Metrics.LoadShed(RushDayMetrics.ShedPolicies.Login);
-            return ProblemResults.ProblemWithRetryAfter(ProblemTypes.RateLimited, 2);
+            if (!lease.IsAcquired)
+            {
+                s.Metrics.LoadShed(RushDayMetrics.ShedPolicies.Login);
+                return ProblemResults.ProblemWithRetryAfter(ProblemTypes.RateLimited, 2);
+            }
+
+            if (unusable)
+            {
+                s.Throttle.VerifyDummyPassword(request.Password);
+            }
+            else
+            {
+                result = await s.SignIn.PasswordSignInAsync(user!, request.Password, isPersistent: false, lockoutOnFailure: false);
+                if (result.IsLockedOut)
+                {
+                    // A locked account must not answer faster than a wrong password.
+                    s.Throttle.VerifyDummyPassword(request.Password);
+                }
+            }
         }
 
-        // 3. Unknown, disabled and demo-disabled accounts cost one PBKDF2 like a wrong password, and answer the same.
-        if (user is null || user.DisabledAt is not null || (user.IsDemo && !s.Demo.Value.Enabled))
+        if (result is null)
         {
-            s.Throttle.VerifyDummyPassword(request.Password);
-            await RecordFailureAsync(s, user, usernameHash, ipHash, clientIp, countTowardLockout: true);
+            attempt.MarkFailed();
+            await RecordFailureAsync(s, user, usernameHash, ipHash, clientKey, countTowardLockout: true);
             return InvalidCredentials(s, RushDayMetrics.LoginOutcomes.Failed, usernameHash, ipHash);
         }
 
-        var result = await s.SignIn.PasswordSignInAsync(user, request.Password, isPersistent: false, lockoutOnFailure: false);
         if (result.IsLockedOut)
         {
-            // A locked account must not answer faster than a wrong password.
-            s.Throttle.VerifyDummyPassword(request.Password);
-            await RecordFailureAsync(s, user, usernameHash, ipHash, clientIp, countTowardLockout: false);
+            attempt.MarkFailed();
+            await RecordFailureAsync(s, user, usernameHash, ipHash, clientKey, countTowardLockout: false);
             return InvalidCredentials(s, RushDayMetrics.LoginOutcomes.LockedOut, usernameHash, ipHash);
         }
 
         if (result.RequiresTwoFactor)
         {
-            // Identity has set the rushday.mfa cookie; no claims are issued until the code is verified.
+            // Identity has set the rushday.mfa cookie (bound to the security stamp); no claims are issued until the
+            // code is verified. The password was right, so the attempt's permits are refunded.
             s.Metrics.Login(RushDayMetrics.LoginOutcomes.MfaRequired);
             return TypedResults.Ok(new MfaChallenge(true, s.Antiforgery.GetAndStoreTokens(http).RequestToken!));
         }
 
         if (result.Succeeded)
         {
-            return await CompleteSignInAsync(s, user);
+            return await CompleteSignInAsync(s, user!);
         }
 
         // 5. Wrong password.
-        await RecordFailureAsync(s, user, usernameHash, ipHash, clientIp, countTowardLockout: true);
+        attempt.MarkFailed();
+        await RecordFailureAsync(s, user, usernameHash, ipHash, clientKey, countTowardLockout: true);
         return InvalidCredentials(s, RushDayMetrics.LoginOutcomes.Failed, usernameHash, ipHash);
     }
 
@@ -168,34 +189,44 @@ public static class AuthEndpoints
     private static async Task<IResult> MfaVerifyAsync(MfaCodeRequest request, [AsParameters] AuthServices s)
     {
         var http = s.Http;
-        var clientIp = RateLimitPolicies.ClientIp(http);
-        var ipHash = s.IpHasher.Hash(clientIp);
+        var clientKey = RateLimitPolicies.ClientKey(http);
+        var ipHash = s.IpHasher.Hash(RateLimitPolicies.ClientIp(http));
 
         var user = await s.SignIn.GetTwoFactorAuthenticationUserAsync();
         var normalized = user?.NormalizedUserName ?? string.Empty;
         var usernameHash = LoginThrottle.UsernameHash(normalized);
 
-        var gate = s.Throttle.TryAcquire(normalized, clientIp);
-        if (!gate.Allowed)
+        using var attempt = s.Throttle.TryBegin(normalized, clientKey);
+        if (!attempt.Allowed)
         {
             s.Metrics.LoadShed(RushDayMetrics.ShedPolicies.Login);
-            return ProblemResults.ProblemWithRetryAfter(ProblemTypes.RateLimited, gate.RetryAfterSeconds);
+            return ProblemResults.ProblemWithRetryAfter(ProblemTypes.RateLimited, attempt.RetryAfterSeconds);
         }
 
-        if (user is null || user.DisabledAt is not null)
+        // A missing or expired challenge, a disabled account, or a challenge issued under an older security stamp (the
+        // password was reset or changed, the factor reset, the account locked or disabled since the password step).
+        if (user is null || user.DisabledAt is not null || !await MfaChallengeBinding.IsCurrentAsync(http, user))
         {
-            s.Throttle.RecordFailure(usernameHash, ipHash, clientIp);
+            attempt.MarkFailed();
+            if (user is not null)
+            {
+                await http.SignOutAsync(IdentityConstants.TwoFactorUserIdScheme);
+            }
+
+            s.Throttle.RecordFailure(usernameHash, clientKey);
             return InvalidCredentials(s, RushDayMetrics.LoginOutcomes.Failed, usernameHash, ipHash);
         }
 
-        // Identity counts a wrong code as an access failure, so lockout applies after five.
+        // Identity counts a wrong code as an access failure, so lockout applies after five; the provider refuses a code
+        // whose time step was already used.
         var result = await s.SignIn.TwoFactorAuthenticatorSignInAsync(request.Code, isPersistent: false, rememberClient: false);
         if (result.Succeeded)
         {
             return await CompleteSignInAsync(s, user);
         }
 
-        s.Throttle.RecordFailure(usernameHash, ipHash, clientIp);
+        attempt.MarkFailed();
+        s.Throttle.RecordFailure(usernameHash, clientKey);
         if (result.IsLockedOut)
         {
             return InvalidCredentials(s, RushDayMetrics.LoginOutcomes.LockedOut, usernameHash, ipHash);
@@ -220,12 +251,13 @@ public static class AuthEndpoints
     }
 
     /// <summary>
-    /// Step 5: the per-IP failure window always; Identity's access-failed count only for a real, non-demo account whose
-    /// recent failures come from at least <c>LockoutDistinctIps</c> addresses.
+    /// Step 5: the failure map always (the windows already hold this attempt's permits); Identity's access-failed count
+    /// only for a real, non-demo account whose recent failures come from at least <c>LockoutDistinctIps</c> addresses
+    /// (IPv6 counted by /64).
     /// </summary>
-    private static async Task RecordFailureAsync(AuthServices s, ApplicationUser? user, string usernameHash, string ipHash, string clientIp, bool countTowardLockout)
+    private static async Task RecordFailureAsync(AuthServices s, ApplicationUser? user, string usernameHash, string ipHash, string clientKey, bool countTowardLockout)
     {
-        var distinctAddresses = s.Throttle.RecordFailure(usernameHash, ipHash, clientIp);
+        var distinctAddresses = s.Throttle.RecordFailure(usernameHash, clientKey);
         if (!countTowardLockout || user is null || user.IsDemo || distinctAddresses < s.Throttle.LockoutDistinctIps)
         {
             return;
@@ -261,6 +293,7 @@ public static class AuthEndpoints
         }
 
         await http.SignOutAsync(IdentityConstants.ApplicationScheme);
+        await http.SignOutAsync(IdentityConstants.TwoFactorUserIdScheme);
         return TypedResults.NoContent();
     }
 
@@ -272,7 +305,8 @@ public static class AuthEndpoints
         SignInManager<ApplicationUser> signIn,
         AccountService accounts,
         LoginThrottle throttle,
-        RushDayMetrics metrics)
+        RushDayMetrics metrics,
+        ILoggerFactory loggers)
     {
         var user = await users.GetUserAsync(http.User);
         if (user is null)
@@ -280,30 +314,46 @@ public static class AuthEndpoints
             return ProblemResults.Problem(ProblemTypes.Unauthenticated);
         }
 
-        using var lease = await throttle.Cpu.AcquireAsync(1, http.RequestAborted);
-        if (!lease.IsAcquired)
+        AccountResult<ApplicationUser> result;
+        using (var lease = await throttle.Cpu.AcquireAsync(1, http.RequestAborted))
         {
-            metrics.LoadShed(RushDayMetrics.ShedPolicies.Login);
-            return ProblemResults.ProblemWithRetryAfter(ProblemTypes.RateLimited, 2);
+            if (!lease.IsAcquired)
+            {
+                metrics.LoadShed(RushDayMetrics.ShedPolicies.Login);
+                return ProblemResults.ProblemWithRetryAfter(ProblemTypes.RateLimited, 2);
+            }
+
+            result = await accounts.ChangePasswordAsync(user, request.CurrentPassword, request.NewPassword, http.RequestAborted);
         }
 
-        var result = await accounts.ChangePasswordAsync(user, request.CurrentPassword, request.NewPassword, http.RequestAborted);
         switch (result.Error)
         {
             case AccountError.None:
-                // The stamp rotated: this session is re-issued, every other one dies at its next validation.
+                // The stamp rotated: this session is re-issued, every other one dies at its next validation, and any
+                // outstanding second-factor challenge of this browser is dropped.
                 await signIn.RefreshSignInAsync(user);
+                await http.SignOutAsync(IdentityConstants.TwoFactorUserIdScheme);
                 return TypedResults.NoContent();
             case AccountError.DemoAccount:
                 return ProblemResults.Problem(ProblemTypes.DemoAccount, "Demo accounts are read-only.");
             case AccountError.InvalidCurrentPassword:
+                if (result.LockedOut)
+                {
+                    metrics.Lockout();
+                    loggers.CreateLogger(LoggerCategory).LogWarning(
+                        "Login outcome {Outcome} for {UsernameHash} from {IpHash}",
+                        "locked_out",
+                        LoginThrottle.UsernameHash(user.NormalizedUserName ?? string.Empty),
+                        http.RequestServices.GetRequiredService<IpHasher>().Hash(RateLimitPolicies.ClientIp(http)));
+                }
+
                 return ProblemResults.Problem(ProblemTypes.InvalidCurrentPassword);
             default:
                 return WeakPassword(result.Codes);
         }
     }
 
-    // POST /api/auth/mfa/setup: a fresh authenticator key, shown once.
+    // POST /api/auth/mfa/setup: a fresh authenticator key, shown once. Staff only: students never enrol a factor (D27).
     private static async Task<IResult> MfaSetupAsync(
         HttpContext http,
         UserManager<ApplicationUser> users,
@@ -312,6 +362,11 @@ public static class AuthEndpoints
         AuditWriter audit,
         IOptions<BrandingOptions> branding)
     {
+        if (IsStudent(http))
+        {
+            return ProblemResults.Problem(ProblemTypes.Forbidden);
+        }
+
         var user = await users.GetUserAsync(http.User);
         if (user is null)
         {
@@ -353,6 +408,11 @@ public static class AuthEndpoints
         RushDayDbContext db,
         AuditWriter audit)
     {
+        if (IsStudent(http))
+        {
+            return ProblemResults.Problem(ProblemTypes.Forbidden);
+        }
+
         var user = await users.GetUserAsync(http.User);
         if (user is null)
         {
@@ -388,6 +448,9 @@ public static class AuthEndpoints
         http.User = principal;
         return TypedResults.Ok(Me.From(principal, antiforgery.GetAndStoreTokens(http).RequestToken!));
     }
+
+    private static bool IsStudent(HttpContext http) =>
+        string.Equals(http.User.FindFirst(RushDayClaims.Role)?.Value, RushDayRoles.Student, StringComparison.Ordinal);
 
     private static IResult WeakPassword(IReadOnlyList<string> codes) =>
         ProblemResults.Problem(

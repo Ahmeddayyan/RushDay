@@ -33,6 +33,20 @@ public sealed class RushDayMetrics : ICacheMetrics
         public const string MfaRequired = "mfa_required";
     }
 
+    /// <summary><c>rushday.enrolments.rejected{reason}</c> values: the closed list of 04 section 2.1 (S4 records them).</summary>
+    public static class RejectionReasons
+    {
+        public const string ModuleFull = "module_full";
+        public const string AlreadyEnrolled = "already_enrolled";
+        public const string WindowClosed = "window_closed";
+        public const string CreditLimit = "credit_limit";
+        public const string ResultsExist = "results_exist";
+        public const string StudentLeft = "student_left";
+        public const string ModuleInactive = "module_inactive";
+
+        public static IReadOnlyList<string> All { get; } = [ModuleFull, AlreadyEnrolled, WindowClosed, CreditLimit, ResultsExist, StudentLeft, ModuleInactive];
+    }
+
     /// <summary>
     /// <c>rushday.load_shed.rejected{policy}</c> values: the closed list of 04 section 6.1. The <c>password-change</c>
     /// limiter reports as <see cref="Login"/>, the family it protects.
@@ -70,7 +84,7 @@ public sealed class RushDayMetrics : ICacheMetrics
 
     public Counter<long> EnrolmentsAccepted { get; }
 
-    /// <summary>Tag <c>reason</c> = module_full, already_enrolled, window_closed, credit_limit, results_exist, student_left, module_inactive.</summary>
+    /// <summary>Tag <c>reason</c>: one of <see cref="RejectionReasons"/>.</summary>
     public Counter<long> EnrolmentsRejected { get; }
 
     public Histogram<double> EnrolmentsDuration { get; }

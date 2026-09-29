@@ -41,6 +41,9 @@ public static partial class ServiceRegistration
     public static readonly TimeSpan LoginRequestTimeout = TimeSpan.FromSeconds(20);
     public static readonly TimeSpan ExportRequestTimeout = TimeSpan.FromSeconds(60);
 
+    /// <summary>Every 503 carries <c>Retry-After</c> (02-api.md section 5); a timed-out request may retry after 2 s.</summary>
+    public const int TimeoutRetryAfterSeconds = 2;
+
     public static WebApplicationBuilder AddRushDayServices(this WebApplicationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -57,6 +60,10 @@ public static partial class ServiceRegistration
         ConfigureJson(services);
 
         services.AddValidation();
+
+        // A body that does not bind (malformed JSON, a wrong type, no body) is a 400 validation problem in every
+        // environment; Development's default would throw it into the exception handler as a 500.
+        services.Configure<RouteHandlerOptions>(o => o.ThrowOnBadRequest = false);
         services.AddProblemDetails(o => o.CustomizeProblemDetails = ProblemDetailsCustomizer.Customize);
         services.AddExceptionHandler<RushDayExceptionHandler>();
         services.AddRequestTimeouts(o =>
@@ -67,7 +74,7 @@ public static partial class ServiceRegistration
         });
         services.AddOpenApi();
 
-        AddPersistence(services, configuration);
+        AddPersistence(services, configuration, builder.Environment);
         AddIdentity(services);
         AddDataProtection(services);
         AddSecurity(services);
@@ -94,7 +101,18 @@ public static partial class ServiceRegistration
 
     private static void AddOptions(IServiceCollection services, IConfiguration configuration)
     {
-        services.AddOptions<DatabaseOptions>().Bind(configuration.GetSection(DatabaseOptions.SectionName));
+        // Outside Development the app migrates and backfills on boot unless told otherwise (01 section 6, 03 section 8):
+        // these defaults are applied before the section is bound, so an explicit false still wins.
+        services.AddOptions<DatabaseOptions>()
+            .Configure<IHostEnvironment>((o, environment) =>
+            {
+                if (!environment.IsDevelopment())
+                {
+                    o.MigrateOnStartup = true;
+                    o.BackfillOnStartup = true;
+                }
+            })
+            .Bind(configuration.GetSection(DatabaseOptions.SectionName));
         services.AddOptions<RateLimitingOptions>().Bind(configuration.GetSection(RateLimitingOptions.SectionName));
         services.AddOptions<DemoOptions>().Bind(configuration.GetSection(DemoOptions.SectionName));
         services.AddOptions<BootstrapOptions>().Bind(configuration.GetSection(BootstrapOptions.SectionName));
@@ -106,13 +124,15 @@ public static partial class ServiceRegistration
 
     private static void ConfigureLogging(WebApplicationBuilder builder)
     {
-        // Production: one JSON object per line with scopes (traceId from the hosting scope); Development: plain console.
+        // Production: one JSON object per line; Development: plain console. Scopes stay off: the hosting scope carries
+        // the raw request path (and so any personal data in it), and the per-request line already carries traceId,
+        // userId, role and the route template (03-security.md section 6).
         if (!builder.Environment.IsDevelopment())
         {
             builder.Logging.ClearProviders();
             builder.Logging.AddJsonConsole(o =>
             {
-                o.IncludeScopes = true;
+                o.IncludeScopes = false;
                 o.UseUtcTimestamp = true;
                 o.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ ";
             });
@@ -146,13 +166,17 @@ public static partial class ServiceRegistration
         });
     }
 
-    private static void AddPersistence(IServiceCollection services, IConfiguration configuration)
+    private static void AddPersistence(IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
     {
         var connectionString = configuration.GetConnectionString("RushDay")
             ?? throw new InvalidOperationException("Connection string 'RushDay' is not configured (ConnectionStrings__RushDay).");
         var database = configuration.GetSection(DatabaseOptions.SectionName).Get<DatabaseOptions>() ?? new DatabaseOptions();
 
-        services.AddRushDayPersistence(connectionString, StartupTasks.MaxPoolSize(database));
+        // Outside Development "Include Error Detail" is forced off, whatever the connection string says (T10).
+        services.AddRushDayPersistence(connectionString, StartupTasks.MaxPoolSize(database), allowErrorDetail: environment.IsDevelopment());
+
+        // For work that must not borrow a request's scoped context, above all HybridCache factories (04 section 4).
+        services.AddSingleton<IDbContextFactory<RushDayDbContext>, RushDayDbContextFactory>();
         services.AddSingleton<DbCommandCounter>();
         services.ConfigureDbContext<RushDayDbContext>((provider, options) => options.AddInterceptors(provider.GetRequiredService<DbCommandCounter>()));
         services.AddHealthChecks().AddDbContextCheck<RushDayDbContext>("database");
@@ -182,7 +206,8 @@ public static partial class ServiceRegistration
             .AddRoles<IdentityRole<Guid>>()
             .AddEntityFrameworkStores<RushDayDbContext>()
             .AddSignInManager()
-            .AddTokenProvider<AuthenticatorTokenProvider<ApplicationUser>>(TokenOptions.DefaultAuthenticatorProvider)
+            // TOTP only (no email or phone providers), refusing a time step that was already accepted.
+            .AddTokenProvider<ReplayProtectedAuthenticatorTokenProvider>(TokenOptions.DefaultAuthenticatorProvider)
             .AddPasswordValidator<RushDayPasswordValidator>()
             .AddClaimsPrincipalFactory<RushDayClaimsPrincipalFactory>();
         services.Configure<PasswordHasherOptions>(o => o.IterationCount = PasswordHashing.IterationCount);
@@ -211,7 +236,13 @@ public static partial class ServiceRegistration
                 o.Cookie.SameSite = SameSiteMode.Strict;
                 o.Cookie.SecurePolicy = SecurePolicy(environment);
                 o.Cookie.Path = "/";
+
+                // The challenge lives exactly MfaCookieMinutes from the password step: verify calls never renew it.
                 o.ExpireTimeSpan = TimeSpan.FromMinutes(auth.Value.MfaCookieMinutes);
+                o.SlidingExpiration = false;
+
+                // ...and it is bound to the security stamp, so a reset or change of the password kills it.
+                o.Events.OnSigningIn = MfaChallengeBinding.OnSigningInAsync;
             });
         services.AddOptions<SecurityStampValidatorOptions>()
             .Configure<IOptions<AuthOptions>>((o, auth) =>
@@ -326,6 +357,6 @@ public static partial class ServiceRegistration
     {
         Timeout = timeout,
         TimeoutStatusCode = StatusCodes.Status503ServiceUnavailable,
-        WriteTimeoutResponse = context => ProblemResults.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, ProblemTypes.Timeout),
+        WriteTimeoutResponse = context => ProblemResults.WriteAsync(context, StatusCodes.Status503ServiceUnavailable, ProblemTypes.Timeout, retryAfterSeconds: TimeoutRetryAfterSeconds),
     };
 }

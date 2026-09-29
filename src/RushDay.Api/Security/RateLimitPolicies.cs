@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 using RushDay.Api.Auth;
@@ -50,7 +52,7 @@ public static class RateLimitPolicies
         };
 
         options.AddPolicy(Login, new Policy(
-            context => RateLimitPartition.GetSlidingWindowLimiter(ClientIp(context), _ => new SlidingWindowRateLimiterOptions
+            context => RateLimitPartition.GetSlidingWindowLimiter(ClientKey(context), _ => new SlidingWindowRateLimiterOptions
             {
                 PermitLimit = Math.Max(1, limits.LoginPerIpPerMinute),
                 Window = TimeSpan.FromSeconds(60),
@@ -89,7 +91,7 @@ public static class RateLimitPolicies
             Rejected(metrics, RushDayMetrics.ShedPolicies.Write, StatusCodes.Status429TooManyRequests, ProblemTypes.RateLimited, TimeSpan.FromSeconds(60))));
 
         options.AddPolicy(HealthReady, new Policy(
-            context => RateLimitPartition.GetFixedWindowLimiter(ClientIp(context), _ => new FixedWindowRateLimiterOptions
+            context => RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = Math.Max(1, limits.HealthReadyPerIpPerMinute),
                 Window = TimeSpan.FromMinutes(1),
@@ -111,11 +113,54 @@ public static class RateLimitPolicies
     public static bool IsGloballyLimited(PathString path) =>
         path.StartsWithSegments("/api") && !GlobalExemptPaths.Any(p => path.Equals(p, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>The client address after forwarded headers ("unknown" when the server has none).</summary>
-    public static string ClientIp(HttpContext context) => context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    /// <summary>
+    /// The client address after forwarded headers, an IPv4-mapped IPv6 address in its IPv4 form ("unknown" when the
+    /// server has none). Used only where the full address matters: the keyed <c>ipHash</c> of logs and audit rows.
+    /// </summary>
+    public static string ClientIp(HttpContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var address = context.Connection.RemoteIpAddress;
+        return address is null ? "unknown" : (address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address).ToString();
+    }
+
+    /// <summary>
+    /// The key of every per-address limit (the <c>login</c> and <c>health-ready</c> policies, the per-address
+    /// failed-login window, anonymous callers of the per-user policies) and of the "distinct addresses" lockout rule:
+    /// IPv4 as is (an IPv4-mapped IPv6 address becomes its IPv4 form), native IPv6 truncated to its /64, because one
+    /// subscriber or host routinely holds a whole /64 and could otherwise present a new address on every request.
+    /// </summary>
+    public static string ClientKey(HttpContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return ClientKey(context.Connection.RemoteIpAddress);
+    }
+
+    /// <inheritdoc cref="ClientKey(HttpContext)"/>
+    public static string ClientKey(IPAddress? address)
+    {
+        if (address is null)
+        {
+            return "unknown";
+        }
+
+        if (address.IsIPv4MappedToIPv6)
+        {
+            return address.MapToIPv4().ToString();
+        }
+
+        if (address.AddressFamily != AddressFamily.InterNetworkV6)
+        {
+            return address.ToString();
+        }
+
+        var bytes = address.GetAddressBytes();
+        Array.Clear(bytes, 8, 8);
+        return new IPAddress(bytes) + "/64";
+    }
 
     private static string UserKey(HttpContext context) =>
-        context.User.FindFirst(RushDayClaims.Subject)?.Value is { Length: > 0 } sub ? "user:" + sub : "ip:" + ClientIp(context);
+        context.User.FindFirst(RushDayClaims.Subject)?.Value is { Length: > 0 } sub ? "user:" + sub : "ip:" + ClientKey(context);
 
     private static Func<OnRejectedContext, CancellationToken, ValueTask> Rejected(
         RushDayMetrics metrics,

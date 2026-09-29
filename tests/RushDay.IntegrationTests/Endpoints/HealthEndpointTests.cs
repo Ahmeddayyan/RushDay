@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 using RushDay.Api.Observability;
 using RushDay.Infrastructure.Persistence;
 
@@ -69,8 +70,10 @@ public sealed class HealthEndpointTests(RushDayApiFactory factory)
     [Fact]
     public async Task Metrics_snapshot_counts_requests()
     {
-        var metrics = factory.Services.GetRequiredService<MetricsSnapshotService>();
-        using var client = factory.CreateCookieClient();
+        // A host with a clock of its own, which nothing advances: the current minute's bucket cannot roll over mid-test.
+        await using var host = factory.Derive(clock: new FakeTimeProvider(RushDayApiFactory.ClockStart));
+        var metrics = host.Services.GetRequiredService<MetricsSnapshotService>();
+        using var client = host.CreateCookieClient();
         var before = metrics.GetSnapshot().Series[^1].Requests;
 
         for (var i = 0; i < 3; i++)

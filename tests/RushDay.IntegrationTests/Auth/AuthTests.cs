@@ -112,9 +112,11 @@ public sealed class AuthTests(RushDayApiFactory factory)
                 await fifth.AssertProblemAsync(HttpStatusCode.Unauthorized, "invalid-credentials");
             }
 
+            // Identity sets the lockout end from the real clock, not the factory's fake one: 15 minutes from now.
             var locked = await factory.ReadUserAsync(user.Id);
+            var realNow = DateTimeOffset.UtcNow;
             Assert.NotNull(locked.LockoutEnd);
-            Assert.True(locked.LockoutEnd > factory.Clock.GetUtcNow());
+            Assert.InRange(locked.LockoutEnd.Value, realNow.AddMinutes(14), realNow.AddMinutes(16));
 
             // Even the right password from a fresh address is refused, with the same answer.
             using var correct = factory.CreateCookieClient("198.51.100.4");
@@ -408,7 +410,7 @@ public sealed class AuthTests(RushDayApiFactory factory)
         Assert.Equal(HttpStatusCode.OK, setup.StatusCode);
         var sharedKey = (await setup.ReadJsonAsync()).GetProperty("sharedKey").GetString()!;
 
-        using var enable = await client.PostAsJsonAsync("/api/auth/mfa/enable", new { code = Totp.Code(sharedKey, DateTimeOffset.UtcNow) });
+        using var enable = await client.PostAsJsonAsync("/api/auth/mfa/enable", new { code = Totp.FreshCode(sharedKey) });
         var enabled = await enable.ReadJsonAsync();
         Assert.Equal(HttpStatusCode.OK, enable.StatusCode);
         Assert.False(enabled.GetProperty("mfaSetupRequired").GetBoolean());
@@ -465,7 +467,7 @@ public sealed class AuthTests(RushDayApiFactory factory)
         Assert.Contains("issuer=RushDay", uri, StringComparison.Ordinal);
         Assert.Contains("secret=" + sharedKey.Replace(" ", string.Empty, StringComparison.Ordinal), uri, StringComparison.OrdinalIgnoreCase);
 
-        var code = Totp.Code(sharedKey, DateTimeOffset.UtcNow);
+        var code = Totp.FreshCode(sharedKey);
         using (var wrongEnable = await client.PostAsJsonAsync("/api/auth/mfa/enable", new { code = WrongCode(code) }))
         {
             await wrongEnable.AssertProblemAsync(HttpStatusCode.BadRequest, "invalid-mfa-code");
@@ -504,7 +506,7 @@ public sealed class AuthTests(RushDayApiFactory factory)
             await notYet.AssertProblemAsync(HttpStatusCode.Unauthorized, "unauthenticated");
         }
 
-        var current = Totp.Code(sharedKey, DateTimeOffset.UtcNow);
+        var current = Totp.FreshCode(sharedKey);
         using (var wrong = await client.PostAsJsonAsync("/api/auth/mfa/verify", new { code = WrongCode(current) }))
         {
             await wrong.AssertProblemAsync(HttpStatusCode.Unauthorized, "invalid-credentials");

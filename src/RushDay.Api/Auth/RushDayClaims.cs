@@ -33,6 +33,12 @@ public static class RushDayClaims
     /// <summary>Last activity, Unix seconds; refreshed at most once a minute.</summary>
     public const string LastActivity = "las";
 
+    /// <summary>
+    /// When the security stamp was last checked against the store, Unix seconds. The re-check interval runs from this
+    /// claim, never from the cookie's <c>IssuedUtc</c>, which every <c>las</c> renewal resets (02-api.md section 2.1).
+    /// </summary>
+    public const string StampValidatedAt = "svt";
+
     public const string True = "1";
 
     public static bool IsSet(this ClaimsPrincipal principal, string type) =>

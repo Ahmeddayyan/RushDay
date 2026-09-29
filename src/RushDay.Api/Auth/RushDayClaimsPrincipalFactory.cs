@@ -89,6 +89,9 @@ public sealed class RushDayClaimsPrincipalFactory(
         identity.AddClaim(new Claim(RushDayClaims.IssuedAt, issuedAt ?? now));
         identity.AddClaim(new Claim(RushDayClaims.LastActivity, now));
 
+        // The principal was just built from the store, so its stamp is current as of now.
+        identity.AddClaim(new Claim(RushDayClaims.StampValidatedAt, now));
+
         return identity;
     }
 }

@@ -16,7 +16,8 @@ namespace RushDay.Api.Observability;
 /// per-bucket deltas and totals; histograms keep count, sum, min, max and a fixed-boundary histogram from which
 /// p50/p95/p99 are interpolated; observable instruments are sampled every 5 s (and at snapshot time) as last values.
 /// Data quality and backfill status are refreshed on a 60 s background timer, never per request, so
-/// <see cref="GetSnapshot"/> touches no database.
+/// <see cref="GetSnapshot"/> touches no database; the timer queries only while the snapshot is being polled (within
+/// <see cref="PollingWindow"/> of the last request), so an idle deployment lets Neon's compute suspend.
 /// </summary>
 public sealed class MetricsSnapshotService : IHostedService, IDisposable
 {
@@ -36,6 +37,9 @@ public sealed class MetricsSnapshotService : IHostedService, IDisposable
 
     public static readonly TimeSpan GaugeSampleInterval = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan DataQualityInterval = TimeSpan.FromSeconds(60);
+
+    /// <summary>The background refresh runs only within this long of the last snapshot request.</summary>
+    public static readonly TimeSpan PollingWindow = TimeSpan.FromMinutes(2);
 
     internal const string RequestDuration = "http.server.request.duration";
     internal const string ActiveRequests = "http.server.active_requests";
@@ -82,6 +86,9 @@ public sealed class MetricsSnapshotService : IHostedService, IDisposable
     private Task? _refreshLoop;
     private ITimer? _gaugeTimer;
     private bool _started;
+    private long _lastPolledTicks = long.MinValue;
+    private long _lastRefreshAttemptTicks = long.MinValue;
+    private int _refreshing;
     private volatile DataQualitySnapshot _dataQuality = new(null, null, [], 0);
     private volatile IReadOnlyList<BackfillSnapshot> _backfills = [];
 
@@ -181,6 +188,7 @@ public sealed class MetricsSnapshotService : IHostedService, IDisposable
 
         var now = _clock.GetUtcNow();
         var minute = MinuteOf(now);
+        NotePolled(now);
 
         HttpWindowSnapshot last60s;
         HttpSnapshot http;
@@ -193,12 +201,12 @@ public sealed class MetricsSnapshotService : IHostedService, IDisposable
 
         lock (_gate)
         {
-            // "Last 60 s" is the last complete minute; in the process's first minute it is the minute so far.
+            // "Last 60 s" is the last complete minute; in the process's first minute it is the minute so far. The rate
+            // divides by the seconds of that minute the process was actually up (a cold start mid-minute covers less).
             var windowMinute = minute - 1 >= _startMinute ? minute - 1 : minute;
             var window = BucketAt(windowMinute)?.Values ?? Aggregates.Empty;
-            var seconds = windowMinute == minute
-                ? Math.Max(1, (now - Max(_startedAt, StartOf(minute))).TotalSeconds)
-                : 60;
+            var windowEnd = windowMinute == minute ? now : StartOf(windowMinute + 1);
+            var seconds = Math.Max(1, (windowEnd - Max(_startedAt, StartOf(windowMinute))).TotalSeconds);
             last60s = HttpWindow(window, seconds);
 
             http = new HttpSnapshot((long)_totals.Current(ActiveRequests), last60s);
@@ -222,12 +230,12 @@ public sealed class MetricsSnapshotService : IHostedService, IDisposable
             enrolment = new EnrolmentSnapshot(
                 (long)_totals.Current(RushDayMetrics.EnrolmentsAcceptedName),
                 new EnrolmentRejections(
-                    (long)Rejected("module_full"),
-                    (long)Rejected("already_enrolled"),
-                    (long)Rejected("window_closed"),
-                    (long)Rejected("credit_limit"),
-                    (long)Rejected("results_exist"),
-                    (long)(Rejected("student_left") + Rejected("module_inactive"))),
+                    (long)Rejected(RushDayMetrics.RejectionReasons.ModuleFull),
+                    (long)Rejected(RushDayMetrics.RejectionReasons.AlreadyEnrolled),
+                    (long)Rejected(RushDayMetrics.RejectionReasons.WindowClosed),
+                    (long)Rejected(RushDayMetrics.RejectionReasons.CreditLimit),
+                    (long)Rejected(RushDayMetrics.RejectionReasons.ResultsExist),
+                    (long)(Rejected(RushDayMetrics.RejectionReasons.StudentLeft) + Rejected(RushDayMetrics.RejectionReasons.ModuleInactive))),
                 _totals.MergedHistogram(RushDayMetrics.EnrolmentsDurationName).Percentile(0.95));
 
             var queries = _totals.MergedHistogram(RushDayMetrics.DashboardQueriesName);
@@ -274,10 +282,24 @@ public sealed class MetricsSnapshotService : IHostedService, IDisposable
             DataQuality: _dataQuality);
     }
 
-    /// <summary>Refreshes data quality and backfill status once; the background loop calls it every 60 s.</summary>
+    /// <summary>
+    /// True while the ops snapshot is being polled: within <see cref="PollingWindow"/> of the last
+    /// <see cref="GetSnapshot"/>. Only then does the background loop query the database, so an idle deployment lets
+    /// Neon's compute suspend.
+    /// </summary>
+    public bool IsBeingPolled(DateTimeOffset now)
+    {
+        var last = Interlocked.Read(ref _lastPolledTicks);
+        return last != long.MinValue && now.UtcTicks - last <= PollingWindow.Ticks;
+    }
+
+    /// <summary>
+    /// Refreshes data quality and backfill status once (a no-op while another refresh runs); the background loop calls
+    /// it every 60 s while the snapshot is being polled, and the first poll after an idle spell starts one at once.
+    /// </summary>
     public async Task RefreshDataQualityAsync(CancellationToken cancellationToken)
     {
-        if (_scopeFactory is null)
+        if (_scopeFactory is null || Interlocked.CompareExchange(ref _refreshing, 1, 0) != 0)
         {
             return;
         }
@@ -308,9 +330,28 @@ public sealed class MetricsSnapshotService : IHostedService, IDisposable
             var last = _dataQuality;
             _dataQuality = last with { StaleSince = last.StaleSince ?? _clock.GetUtcNow() };
         }
+        finally
+        {
+            Interlocked.Exchange(ref _lastRefreshAttemptTicks, _clock.GetUtcNow().UtcTicks);
+            Volatile.Write(ref _refreshing, 0);
+        }
     }
 
     private static long MinuteOf(DateTimeOffset instant) => (long)Math.Floor(instant.ToUnixTimeSeconds() / 60d);
+
+    /// <summary>Records a poll; the first one after an idle spell (no refresh within the interval) starts a refresh.</summary>
+    private void NotePolled(DateTimeOffset now)
+    {
+        Interlocked.Exchange(ref _lastPolledTicks, now.UtcTicks);
+
+        var lastAttempt = Interlocked.Read(ref _lastRefreshAttemptTicks);
+        var stale = lastAttempt == long.MinValue || now.UtcTicks - lastAttempt >= DataQualityInterval.Ticks;
+        if (stale && _stopping is { IsCancellationRequested: false } stopping && Volatile.Read(ref _refreshing) == 0)
+        {
+            var token = stopping.Token;
+            _ = Task.Run(() => RefreshDataQualityAsync(token), CancellationToken.None);
+        }
+    }
 
     private static DateTimeOffset StartOf(long minute) => DateTimeOffset.FromUnixTimeSeconds(minute * 60);
 
@@ -445,7 +486,11 @@ public sealed class MetricsSnapshotService : IHostedService, IDisposable
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            await RefreshDataQualityAsync(cancellationToken);
+            if (IsBeingPolled(_clock.GetUtcNow()))
+            {
+                await RefreshDataQualityAsync(cancellationToken);
+            }
+
             try
             {
                 await Task.Delay(DataQualityInterval, _clock, cancellationToken);

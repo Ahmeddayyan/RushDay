@@ -30,6 +30,9 @@ public sealed record AccountResult<T>(T? Value, AccountError Error, IReadOnlyLis
 {
     public bool Succeeded => Error == AccountError.None;
 
+    /// <summary>True when this failure locked the account (a wrong current password was the fifth failure).</summary>
+    public bool LockedOut { get; init; }
+
     public static AccountResult<T> Success(T value) => new(value, AccountError.None, []);
 
     public static AccountResult<T> Fail(AccountError error, IReadOnlyList<string>? codes = null) => new(default, error, codes ?? []);
@@ -136,6 +139,9 @@ public sealed class AccountService(
             return AccountResult<ProvisionedAccount>.Fail(AccountError.UsernameTaken);
         }
 
+        // A demo actor's password is public, so whatever it provisions is demo data: read-only, never locked and
+        // disabled with the rest of the demo. A demo account cannot change its password, so it is not forced to.
+        var demoCreated = actor.ActorIsDemo;
         var user = new ApplicationUser
         {
             Id = Guid.CreateVersion7(),
@@ -144,8 +150,8 @@ public sealed class AccountService(
             DisplayName = request.DisplayName,
             StudentId = studentId,
             LecturerId = lecturerId,
-            MustChangePassword = true,
-            IsDemo = false,
+            MustChangePassword = !demoCreated,
+            IsDemo = demoCreated,
             LockoutEnabled = true,
             CreatedAt = clock.GetUtcNow(),
         };
@@ -250,8 +256,11 @@ public sealed class AccountService(
         }, cancellationToken);
 
     /// <summary>
-    /// The caller's own password change (02-api.md section 2.3). A wrong current password counts toward lockout; the
-    /// security stamp rotates, so every other session ends at its next validation and the caller re-issues its own.
+    /// The caller's own password change (02-api.md section 2.3). A wrong current password counts toward lockout, and
+    /// the failure that locks the account is audited (<c>auth.locked_out</c>) like a sign-in lockout; a locked-out
+    /// account is answered <c>invalid-current-password</c> without checking the password, so a session that outlives
+    /// its lockout until the next stamp validation cannot keep guessing. On success the security stamp rotates, so
+    /// every other session ends at its next validation and the caller re-issues its own.
     /// </summary>
     public async Task<AccountResult<ApplicationUser>> ChangePasswordAsync(ApplicationUser user, string currentPassword, string newPassword, CancellationToken cancellationToken = default)
     {
@@ -267,15 +276,29 @@ public sealed class AccountService(
             return AccountResult<ApplicationUser>.Fail(AccountError.WeakPassword, [SameAsCurrentCode]);
         }
 
+        if (await users.IsLockedOutAsync(user))
+        {
+            return AccountResult<ApplicationUser>.Fail(AccountError.InvalidCurrentPassword);
+        }
+
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var changed = await users.ChangePasswordAsync(user, currentPassword, newPassword);
         if (!changed.Succeeded)
         {
             if (changed.Errors.Any(e => e.Code == nameof(IdentityErrorDescriber.PasswordMismatch)))
             {
+                var failedCount = user.AccessFailedCount + 1;
                 await users.AccessFailedAsync(user);
+                var lockedOut = await users.IsLockedOutAsync(user);
+                if (lockedOut)
+                {
+                    var usernameHash = AuditHashes.UsernameHash(user.NormalizedUserName ?? users.NormalizeName(user.UserName) ?? string.Empty);
+                    audit.Record(db, AuditActions.AuthLockedOut, AuditSubjects.Account, user.Id.ToString(), new { usernameHash, failedCount, ipHash = actor.IpHash }, studentId: user.StudentId);
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+
                 await transaction.CommitAsync(cancellationToken);
-                return AccountResult<ApplicationUser>.Fail(AccountError.InvalidCurrentPassword);
+                return AccountResult<ApplicationUser>.Fail(AccountError.InvalidCurrentPassword) with { LockedOut = lockedOut };
             }
 
             return AccountResult<ApplicationUser>.Fail(AccountError.WeakPassword, [.. changed.Errors.Select(e => e.Code)]);
@@ -326,7 +349,9 @@ public sealed class AccountService(
             return AccountResult<ApplicationUser>.Fail(AccountError.AccountNotFound);
         }
 
-        if (user.IsDemo)
+        // Demo accounts are read-only, and a demo actor (whose password is public) may not change a real account:
+        // together, a demo session can mutate no account at all.
+        if (user.IsDemo || actor.ActorIsDemo)
         {
             return AccountResult<ApplicationUser>.Fail(AccountError.DemoAccount);
         }

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Testing;
 using Microsoft.Extensions.Time.Testing;
 using Npgsql;
 using Testcontainers.PostgreSql;
@@ -24,6 +25,9 @@ public sealed class RushDayApiFactory : WebApplicationFactory<Program>, IAsyncLi
 
     public const int SeedStudentCount = 300;
 
+    /// <summary>EF's per-command log category (Information: one entry per executed command).</summary>
+    public const string CommandLogCategory = "Microsoft.EntityFrameworkCore.Database.Command";
+
     /// <summary>In the past (D24) so seeded autumn results are visible whatever today's date is.</summary>
     public static readonly DateTimeOffset SeedResultsDay = new(2026, 1, 26, 9, 0, 0, TimeSpan.Zero);
 
@@ -44,7 +48,11 @@ public sealed class RushDayApiFactory : WebApplicationFactory<Program>, IAsyncLi
         }
     }
 
-    /// <summary>The shared fake clock; advance it by seconds at most (other tests assume the same day), never back.</summary>
+    /// <summary>
+    /// The shared fake clock; advance it by seconds at most (other tests assume the same day; a FakeTimeProvider cannot
+    /// go back), and use <see cref="Derive"/> with a clock of its own for minute- or hour-scale tests. Identity's
+    /// lockout end and the TOTP check use the real clock, not this one.
+    /// </summary>
     public FakeTimeProvider Clock { get; } = new(ClockStart);
 
     public string ConnectionString => _connectionString ?? throw new InvalidOperationException("The database is not ready; InitializeAsync must run first.");
@@ -83,6 +91,22 @@ public sealed class RushDayApiFactory : WebApplicationFactory<Program>, IAsyncLi
 
             configure?.Invoke(builder);
         });
+
+    /// <summary>
+    /// A derived host that logs <c>Microsoft.EntityFrameworkCore.Database.Command</c> at Information into a fake log
+    /// collector (<c>host.Services.GetFakeLogCollector()</c>), for tests that cross-check a request's commands in the
+    /// log (04-performance-and-ops.md section 6.1). The main host keeps the category at Warning so the seed and the
+    /// rest of the suite do not log every statement.
+    /// </summary>
+    public WebApplicationFactory<Program> DeriveWithCommandLog(Action<IWebHostBuilder>? configure = null, TimeProvider? clock = null) =>
+        Derive(
+            builder =>
+            {
+                builder.UseSetting("Logging:LogLevel:" + CommandLogCategory, "Information");
+                builder.ConfigureTestServices(services => services.AddFakeLogging());
+                configure?.Invoke(builder);
+            },
+            clock);
 
     /// <summary>A Production-environment host with the fixed test KEK and the public-demo acknowledgement.</summary>
     public WebApplicationFactory<Program> Production(Action<IWebHostBuilder>? configure = null) =>

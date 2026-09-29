@@ -22,7 +22,7 @@ public sealed record PublicationBriefs(PublicationSnapshot? Next, PublicationSna
 /// its instant exactly rather than up to a minute later. Invalidated by publish, reschedule, cancel, unpublish and
 /// return-to-draft (S6).
 /// </summary>
-public sealed class PublicationCache(HybridCache cache, RushDayDbContext db, ICacheMetrics metrics)
+public sealed class PublicationCache(HybridCache cache, IDbContextFactory<RushDayDbContext> contexts, ICacheMetrics metrics)
 {
     public static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(60);
 
@@ -65,10 +65,14 @@ public sealed class PublicationCache(HybridCache cache, RushDayDbContext db, ICa
         return new PublicationBriefs(next, latest);
     }
 
-    private async Task<PublicationSnapshot[]> LoadAsync(CancellationToken cancellationToken) =>
-        await db.ResultsPublications.AsNoTracking()
+    // Its own context: the fill may outlive the request that started it (04-performance-and-ops.md section 4).
+    private async Task<PublicationSnapshot[]> LoadAsync(CancellationToken cancellationToken)
+    {
+        await using var db = await contexts.CreateDbContextAsync(cancellationToken);
+        return await db.ResultsPublications.AsNoTracking()
             .Select(p => new PublicationSnapshot(p.Id, p.AcademicYear, p.Semester, p.PublishAt))
             .ToArrayAsync(cancellationToken);
+    }
 
     [ImmutableObject(true)]
     private sealed record PublicationsHolder(IReadOnlyList<PublicationSnapshot> Publications);

@@ -18,10 +18,10 @@ public sealed record RateLimitingOptions
     /// <summary>Named policy <c>login</c>: per client IP, sliding 60 s window.</summary>
     public int LoginPerIpPerMinute { get; init; } = 600;
 
-    /// <summary><c>LoginThrottle</c>: per normalised username, sliding 60 s window.</summary>
+    /// <summary><c>LoginThrottle</c>: failed outcomes per normalised username, sliding 60 s window.</summary>
     public int LoginPerUserPerMinute { get; init; } = 10;
 
-    /// <summary><c>LoginThrottle</c>: failed outcomes per client IP, sliding 10 min window.</summary>
+    /// <summary><c>LoginThrottle</c>: failed outcomes per client address (IPv6 by /64), sliding 10 min window.</summary>
     public int LoginFailuresPerIpPer10Minutes { get; init; } = 20;
 
     /// <summary>Identity lockout is triggered only when an account's recent failures come from this many addresses.</summary>
@@ -30,8 +30,11 @@ public sealed record RateLimitingOptions
     /// <summary>CPU guard around PBKDF2: concurrent permits.</summary>
     public int LoginConcurrency { get; init; } = 8;
 
-    /// <summary>CPU guard around PBKDF2: queue length.</summary>
-    public int LoginQueue { get; init; } = 64;
+    /// <summary>
+    /// CPU guard around PBKDF2: queue length. Kept below the global limiter's 24 permits, so a login storm can hold at
+    /// most 8 + 16 of them and never shed every other <c>/api</c> request.
+    /// </summary>
+    public int LoginQueue { get; init; } = 16;
 
     public int PasswordChangePerUserPerMinute { get; init; } = 5;
 

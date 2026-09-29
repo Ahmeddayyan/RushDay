@@ -19,13 +19,14 @@ public sealed class RateLimitTests(RushDayApiFactory factory)
         using var client = host.CreateCookieClient();
         await client.RefreshCsrfAsync();
 
+        // The window counts failed outcomes only (successes are refunded, AuthTests shows the owner is unaffected).
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            using var allowed = await client.PostLoginAsync("S000011", DemoAccounts.StudentPassword);
-            Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
-            await client.RefreshCsrfAsync();
+            using var failed = await client.PostLoginAsync("S000011", "Wrong-Password-" + attempt);
+            await failed.AssertProblemAsync(HttpStatusCode.Unauthorized, "invalid-credentials");
         }
 
+        // Once it is spent, even the right password waits: the password is not checked at all.
         using var limited = await client.PostLoginAsync("s000011", DemoAccounts.StudentPassword);
         await limited.AssertProblemAsync(HttpStatusCode.TooManyRequests, "rate-limited");
         Assert.InRange(limited.Headers.RetryAfter!.Delta!.Value.TotalSeconds, 1, 60);
@@ -111,6 +112,7 @@ public sealed class RateLimitTests(RushDayApiFactory factory)
         {
             using var response = await client.GetAsync("/api/health/ready");
             await response.AssertProblemAsync(HttpStatusCode.ServiceUnavailable, "timeout");
+            Assert.Equal(TimeSpan.FromSeconds(2), response.Headers.RetryAfter?.Delta);
         }
         finally
         {

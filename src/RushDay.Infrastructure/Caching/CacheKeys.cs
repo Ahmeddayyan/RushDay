@@ -27,7 +27,10 @@ public static class CacheKeys
     };
 
     /// <summary>
-    /// Reads through <paramref name="cache"/> and records hit or miss: a miss is exactly a call of the factory.
+    /// Reads through <paramref name="cache"/> and records hit or miss: a miss is exactly a call of the factory. The
+    /// factory runs inside <see cref="CacheFill"/>, so its commands are not counted as the request's own, and it must
+    /// open its own context from <c>IDbContextFactory</c> rather than use the caller's scoped one (the caller's request
+    /// may end while other callers still wait on the same fill).
     /// </summary>
     public static async ValueTask<T> GetOrCreateAsync<T>(
         this HybridCache cache,
@@ -45,13 +48,33 @@ public static class CacheKeys
             async (state, ct) =>
             {
                 missed = true;
-                return await state(ct);
+                return await CacheFill.RunAsync(state, ct);
             },
             For(lifetime),
             cancellationToken: cancellationToken);
 
         metrics.CacheRequest(metricName, hit: !missed);
         return value;
+    }
+}
+
+/// <summary>
+/// Marks the execution of a cache factory (04-performance-and-ops.md section 6.1): the API's <c>DbCommandCounter</c>
+/// skips commands issued while <see cref="InProgress"/> is true, so a request that happens to fill a cache is measured
+/// by its own queries only. The flag is an async-local set inside the factory's own async flow, so it never leaks
+/// back to the caller.
+/// </summary>
+public static class CacheFill
+{
+    private static readonly AsyncLocal<bool> Active = new();
+
+    public static bool InProgress => Active.Value;
+
+    public static async ValueTask<T> RunAsync<T>(Func<CancellationToken, ValueTask<T>> factory, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        Active.Value = true;
+        return await factory(cancellationToken);
     }
 }
 

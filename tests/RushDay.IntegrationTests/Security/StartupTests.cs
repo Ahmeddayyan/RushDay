@@ -23,6 +23,17 @@ public sealed class StartupTests
         Assert.Contains(StartupTasks.DemoWithoutAcknowledgementMessage, Messages(error), StringComparison.Ordinal);
     }
 
+    /// <summary>Every environment but Development needs the acknowledgement: a Staging slot is as public as Production.</summary>
+    [Fact]
+    public async Task Staging_demo_without_acknowledgement_aborts()
+    {
+        await using var app = App(Environments.Staging, ("Demo:Enabled", "true"), ("DataProtection:KeyEncryptionKey", RushDayApiFactory.TestKeyEncryptionKey));
+
+        var error = Assert.ThrowsAny<Exception>(() => app.CreateClient());
+
+        Assert.Contains(StartupTasks.DemoWithoutAcknowledgementMessage, Messages(error), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Production_without_kek_aborts()
     {
@@ -44,9 +55,12 @@ public sealed class StartupTests
     }
 
     private static WebApplicationFactory<Program> ProductionApp(params (string Key, string Value)[] settings) =>
+        App(Environments.Production, settings);
+
+    private static WebApplicationFactory<Program> App(string environment, params (string Key, string Value)[] settings) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
-            builder.UseEnvironment(Environments.Production);
+            builder.UseEnvironment(environment);
             builder.UseSetting("ConnectionStrings:RushDay", UnreachableDatabase);
             builder.UseSetting("Database:MigrateOnStartup", "true");
             foreach (var (key, value) in settings)

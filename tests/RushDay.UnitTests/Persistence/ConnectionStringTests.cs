@@ -62,7 +62,7 @@ public sealed class ConnectionStringTests
     {
         var incoming = Minimal + ";Maximum Pool Size=7;Command Timeout=42;Include Error Detail=true;Application Name=custom";
 
-        var built = new NpgsqlConnectionStringBuilder(DependencyInjection.BuildConnectionString(incoming, 20));
+        var built = new NpgsqlConnectionStringBuilder(DependencyInjection.BuildConnectionString(incoming, 20, allowErrorDetail: true));
 
         Assert.Equal(7, built.MaxPoolSize);
         Assert.Equal(42, built.CommandTimeout);
@@ -130,11 +130,26 @@ public sealed class ConnectionStringTests
     [InlineData("IncludeErrorDetail=true", nameof(NpgsqlConnectionStringBuilder.IncludeErrorDetail), true)]
     public void Keeps_every_text_and_boolean_override_whatever_alias_spells_it(string fragment, string property, object expected)
     {
-        var built = new NpgsqlConnectionStringBuilder(DependencyInjection.BuildConnectionString(Minimal + ";" + fragment, 20));
+        var built = new NpgsqlConnectionStringBuilder(DependencyInjection.BuildConnectionString(Minimal + ";" + fragment, 20, allowErrorDetail: true));
 
         var actual = typeof(NpgsqlConnectionStringBuilder).GetProperty(property)!.GetValue(built);
 
         Assert.Equal(expected, actual);
+    }
+
+    /// <summary>
+    /// Outside Development (the default) the one setting an operator cannot switch on: the error detail carries row
+    /// values, marks among them, into exceptions and logs (03-security.md T10).
+    /// </summary>
+    [Theory]
+    [InlineData("Include Error Detail=true")]
+    [InlineData("IncludeErrorDetail=true")]
+    [InlineData("include error detail=True")]
+    public void Include_error_detail_is_forced_off_unless_allowed(string fragment)
+    {
+        var built = new NpgsqlConnectionStringBuilder(DependencyInjection.BuildConnectionString(Minimal + ";" + fragment, 20));
+
+        Assert.False(built.IncludeErrorDetail);
     }
 
     [Fact]

@@ -23,7 +23,7 @@ public sealed record SettingsSnapshot(
 /// <c>settings</c>, 60 s. Invalidated by <c>PUT /api/admin/settings</c> (S6). Null only on a database whose backfills
 /// have not created the row yet.
 /// </summary>
-public sealed class SettingsCache(HybridCache cache, RushDayDbContext db, ICacheMetrics metrics)
+public sealed class SettingsCache(HybridCache cache, IDbContextFactory<RushDayDbContext> contexts, ICacheMetrics metrics)
 {
     public static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(60);
 
@@ -42,8 +42,11 @@ public sealed class SettingsCache(HybridCache cache, RushDayDbContext db, ICache
     public ValueTask InvalidateAsync(CancellationToken cancellationToken = default) =>
         cache.RemoveAsync(CacheKeys.Settings, cancellationToken);
 
-    private Task<SettingsSnapshot?> LoadAsync(CancellationToken cancellationToken) =>
-        db.AcademicSettings.AsNoTracking()
+    // Its own context: the fill may outlive the request that started it (04-performance-and-ops.md section 4).
+    private async Task<SettingsSnapshot?> LoadAsync(CancellationToken cancellationToken)
+    {
+        await using var db = await contexts.CreateDbContextAsync(cancellationToken);
+        return await db.AcademicSettings.AsNoTracking()
             .Where(s => s.Id == AcademicSettings.SingletonId)
             .Select(s => new SettingsSnapshot(
                 s.AcademicYear,
@@ -55,6 +58,7 @@ public sealed class SettingsCache(HybridCache cache, RushDayDbContext db, ICache
                 s.SupportUrl,
                 s.UpdatedAt))
             .SingleOrDefaultAsync(cancellationToken);
+    }
 
     /// <summary>Wraps a possibly-null row so "no row yet" is cached like any other value.</summary>
     [ImmutableObject(true)]

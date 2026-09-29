@@ -59,14 +59,15 @@ public sealed class PublicStatusTests(RushDayApiFactory factory)
         var latest = status.GetProperty("latestPublication");
         Assert.Equal("2025/26", latest.GetProperty("academicYear").GetString());
         Assert.Equal("autumn", latest.GetProperty("semester").GetString());
-        Assert.Equal("2026-01-26T09:00:00Z", latest.GetProperty("publishAt").GetString());
+        Assert.Equal("2026-01-26T09:00:00.000Z", latest.GetProperty("publishAt").GetString());
         Assert.Equal("live", latest.GetProperty("state").GetString());
 
         var windows = status.GetProperty("enrolmentWindows").EnumerateArray().ToList();
         Assert.Equal(["autumn", "spring"], windows.Select(w => w.GetProperty("semester").GetString()));
         Assert.All(windows, w => Assert.Equal("open", w.GetProperty("state").GetString()));
         Assert.All(windows, w => Assert.Equal("2026/27", w.GetProperty("academicYear").GetString()));
-        Assert.Equal("2026-10-02T17:00:00Z", windows[0].GetProperty("closesAt").GetString());
+        Assert.Equal("2026-10-02T17:00:00.000Z", windows[0].GetProperty("closesAt").GetString());
+        Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", status.GetProperty("serverTime").GetString());
     }
 
     [Fact]
@@ -92,12 +93,17 @@ public sealed class PublicStatusTests(RushDayApiFactory factory)
         using var signedIn = await factory.LoginAsync("S000013", DemoAccounts.StudentPassword);
 
         using var first = await anonymous.GetAsync("/api/public/status");
+
+        // A second later a freshly built body would carry another serverTime: equal bodies (and an Age header) mean
+        // the signed-in caller was served the cached one.
+        factory.Clock.Advance(TimeSpan.FromSeconds(1));
         using var second = await signedIn.GetAsync("/api/public/status");
 
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
         Assert.Empty(first.SetCookieHeaders());
         Assert.Equal("no-store", first.Headers.CacheControl?.ToString());
         Assert.Equal(await first.Content.ReadAsStringAsync(), await second.Content.ReadAsStringAsync());
+        Assert.NotNull(second.Headers.Age);
     }
 
     [Fact]

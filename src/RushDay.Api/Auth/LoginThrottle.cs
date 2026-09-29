@@ -1,26 +1,73 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Options;
 using RushDay.Api.Options;
+using RushDay.Infrastructure.Audit;
 using RushDay.Infrastructure.Identity;
 
 namespace RushDay.Api.Auth;
 
-/// <summary>The verdict of <see cref="LoginThrottle.TryAcquire"/>.</summary>
-public readonly record struct ThrottleDecision(bool Allowed, int RetryAfterSeconds)
+/// <summary>
+/// One sign-in attempt's reservation in <see cref="LoginThrottle"/>'s two failure windows. Disposing it refunds both
+/// permits unless <see cref="MarkFailed"/> was called, so only failed outcomes stay counted, and a request that ends
+/// early (an exception, the CPU guard shedding it) costs the caller nothing.
+/// </summary>
+public sealed class LoginAttempt : IDisposable
 {
-    public static ThrottleDecision Allow { get; } = new(true, 0);
+    private readonly LoginThrottle? _throttle;
+    private readonly WindowPermit _address;
+    private readonly WindowPermit _username;
+    private bool _failed;
+    private bool _settled;
+
+    internal LoginAttempt(LoginThrottle throttle, WindowPermit address, WindowPermit username)
+    {
+        _throttle = throttle;
+        _address = address;
+        _username = username;
+        Allowed = true;
+    }
+
+    private LoginAttempt(int retryAfterSeconds)
+    {
+        RetryAfterSeconds = retryAfterSeconds;
+    }
+
+    public bool Allowed { get; }
+
+    public int RetryAfterSeconds { get; }
+
+    /// <summary>The attempt failed: its permits stay in both windows.</summary>
+    public void MarkFailed() => _failed = true;
+
+    public void Dispose()
+    {
+        if (_settled || _throttle is null)
+        {
+            return;
+        }
+
+        _settled = true;
+        if (!_failed)
+        {
+            _throttle.Refund(_address, _username);
+        }
+    }
+
+    internal static LoginAttempt Rejected(int retryAfterSeconds) => new(retryAfterSeconds);
 }
 
 /// <summary>
 /// The in-handler half of the login protection (D6, 02-api.md sections 2.3 and 5), a singleton injected into login and
-/// MFA verification. It owns three limiters: a per-username sliding window (every attempt counts), a per-IP sliding
-/// window of <b>failed</b> outcomes (checked before any lookup, consumed only on failure) and the CPU guard
-/// <see cref="Cpu"/> around PBKDF2. It also keeps the failure map that decides when Identity lockout may count a
-/// failure: only once an account's failures in 15 minutes come from at least <c>LockoutDistinctIps</c> addresses, so a
-/// single address can never lock a victim (it is stopped by its own failure window first).
+/// MFA verification. It owns two "failed outcomes only" windows, per client address (<c>LoginFailuresPerIpPer10Minutes</c>)
+/// and per normalised username (<c>LoginPerUserPerMinute</c>), and the CPU guard <see cref="Cpu"/> around PBKDF2.
+/// Both windows work by reserve-then-refund (<see cref="TryBegin"/>, <see cref="LoginAttempt"/>): a permit is taken
+/// before the password is checked and handed back on success, so concurrent attempts cannot overrun a window and a
+/// user's own successful sign-ins never spend it. It also keeps the failure map that decides when Identity lockout
+/// may count a failure: only once an account's failures in 15 minutes come from at least <c>LockoutDistinctIps</c>
+/// addresses (IPv6 by /64, <see cref="Security.RateLimitPolicies.ClientKey(HttpContext)"/>), so a single address can
+/// never lock a victim (it is stopped by its own failure window first).
 /// </summary>
 public sealed class LoginThrottle : IDisposable
 {
@@ -31,8 +78,8 @@ public sealed class LoginThrottle : IDisposable
     private static readonly TimeSpan UserWindow = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan IpFailureWindow = TimeSpan.FromMinutes(10);
 
-    private readonly PartitionedRateLimiter<string> _perUser;
-    private readonly PartitionedRateLimiter<string> _ipFailures;
+    private readonly SlidingWindowCounter _perUser;
+    private readonly SlidingWindowCounter _ipFailures;
     private readonly TimeProvider _clock;
     private readonly Lazy<string> _dummyHash;
     private readonly IPasswordHasher<ApplicationUser> _hasher;
@@ -47,23 +94,8 @@ public sealed class LoginThrottle : IDisposable
         _clock = clock;
         _hasher = PasswordHashing.Create();
 
-        _perUser = PartitionedRateLimiter.Create<string, string>(username => RateLimitPartition.GetSlidingWindowLimiter(username, _ => new SlidingWindowRateLimiterOptions
-        {
-            PermitLimit = Math.Max(1, limits.LoginPerUserPerMinute),
-            Window = UserWindow,
-            SegmentsPerWindow = 6,
-            QueueLimit = 0,
-            AutoReplenishment = true,
-        }));
-
-        _ipFailures = PartitionedRateLimiter.Create<string, string>(ip => RateLimitPartition.GetSlidingWindowLimiter(ip, _ => new SlidingWindowRateLimiterOptions
-        {
-            PermitLimit = Math.Max(1, limits.LoginFailuresPerIpPer10Minutes),
-            Window = IpFailureWindow,
-            SegmentsPerWindow = 10,
-            QueueLimit = 0,
-            AutoReplenishment = true,
-        }));
+        _perUser = new SlidingWindowCounter(Math.Max(1, limits.LoginPerUserPerMinute), UserWindow, 6, clock);
+        _ipFailures = new SlidingWindowCounter(Math.Max(1, limits.LoginFailuresPerIpPer10Minutes), IpFailureWindow, 10, clock);
 
         Cpu = new ConcurrencyLimiter(new ConcurrencyLimiterOptions
         {
@@ -87,38 +119,37 @@ public sealed class LoginThrottle : IDisposable
     private static ApplicationUser DummyUser { get; } = new() { UserName = "dummy", DisplayName = "dummy" };
 
     /// <summary>First 12 hex characters of SHA-256 of the normalised username (the only form logs and audit hold).</summary>
-    public static string UsernameHash(string normalizedUsername) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedUsername)))[..12];
+    public static string UsernameHash(string normalizedUsername) => AuditHashes.UsernameHash(normalizedUsername);
 
     /// <summary>
-    /// Checks the per-IP failure window without consuming it, then consumes one attempt from the per-username window.
-    /// Either exhausted → not allowed, with the seconds to wait.
+    /// Reserves one permit in the per-address failure window, then one in the per-username window. Either exhausted →
+    /// not allowed, with the seconds to wait, and nothing stays reserved. Dispose the result when the attempt ends.
     /// </summary>
-    public ThrottleDecision TryAcquire(string normalizedUsername, string clientIp)
+    public LoginAttempt TryBegin(string normalizedUsername, string clientKey)
     {
-        using (var probe = _ipFailures.AttemptAcquire(clientIp, permitCount: 0))
+        ArgumentNullException.ThrowIfNull(normalizedUsername);
+        ArgumentNullException.ThrowIfNull(clientKey);
+
+        if (!_ipFailures.TryReserve(clientKey, out var address, out var addressRetry))
         {
-            if (!probe.IsAcquired)
-            {
-                return new ThrottleDecision(false, RetryAfter(probe, IpFailureWindow / 10));
-            }
+            return LoginAttempt.Rejected(Seconds(addressRetry));
         }
 
-        using var lease = _perUser.AttemptAcquire(normalizedUsername);
-        return lease.IsAcquired ? ThrottleDecision.Allow : new ThrottleDecision(false, RetryAfter(lease, UserWindow / 6));
+        if (!_perUser.TryReserve(normalizedUsername, out var username, out var usernameRetry))
+        {
+            _ipFailures.Refund(address);
+            return LoginAttempt.Rejected(Seconds(usernameRetry));
+        }
+
+        return new LoginAttempt(this, address, username);
     }
 
     /// <summary>
-    /// Records a failed outcome: consumes the per-IP failure window and notes (usernameHash, ipHash) for 15 minutes.
-    /// Returns how many distinct addresses failed for this username in the window.
+    /// Notes a failed outcome for (usernameHash, address key) for 15 minutes and returns how many distinct addresses
+    /// failed for this username in that time. The windows were already charged by <see cref="TryBegin"/>.
     /// </summary>
-    public int RecordFailure(string usernameHash, string ipHash, string clientIp)
+    public int RecordFailure(string usernameHash, string clientKey)
     {
-        using (_ipFailures.AttemptAcquire(clientIp))
-        {
-            // Consumed; an already-exhausted window simply stays exhausted.
-        }
-
         var now = _clock.GetUtcNow();
         lock (_gate)
         {
@@ -128,12 +159,12 @@ public sealed class LoginThrottle : IDisposable
                 _failures[usernameHash] = addresses;
             }
 
-            if (!addresses.ContainsKey(ipHash))
+            if (!addresses.ContainsKey(clientKey))
             {
                 _failureEntries++;
             }
 
-            addresses[ipHash] = now;
+            addresses[clientKey] = now;
             PruneExpired(addresses, now);
 
             if (_failureEntries > MaxFailureEntries)
@@ -149,18 +180,21 @@ public sealed class LoginThrottle : IDisposable
     public void VerifyDummyPassword(string password) =>
         _hasher.VerifyHashedPassword(DummyUser, _dummyHash.Value, password ?? string.Empty);
 
-    public void Dispose()
-    {
-        _perUser.Dispose();
-        _ipFailures.Dispose();
-        Cpu.Dispose();
-    }
+    public void Dispose() => Cpu.Dispose();
 
     internal static int RetryAfter(RateLimitLease lease, TimeSpan fallback)
     {
         var retryAfter = lease.TryGetMetadata(MetadataName.RetryAfter, out var value) ? value : fallback;
-        return Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+        return Seconds(retryAfter);
     }
+
+    internal void Refund(WindowPermit address, WindowPermit username)
+    {
+        _perUser.Refund(username);
+        _ipFailures.Refund(address);
+    }
+
+    private static int Seconds(TimeSpan retryAfter) => Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
 
     private void PruneExpired(Dictionary<string, DateTimeOffset> addresses, DateTimeOffset now)
     {

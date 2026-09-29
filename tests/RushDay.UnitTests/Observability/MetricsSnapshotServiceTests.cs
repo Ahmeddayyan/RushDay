@@ -1,8 +1,10 @@
 using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting.Internal;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 using RushDay.Api.Observability;
 using RushDay.Api.Options;
 
@@ -128,6 +130,107 @@ public sealed class MetricsSnapshotServiceTests : IDisposable
 
         Assert.Equal(2, window.Requests);
         Assert.Equal(0.1, window.PerSecond);
+    }
+
+    /// <summary>After a cold start mid-minute, the last complete minute only covers the seconds the process was up.</summary>
+    [Fact]
+    public void After_a_cold_start_the_rate_divides_by_the_covered_seconds()
+    {
+        _clock.Set(Start.AddSeconds(30));
+        using var meters = new TestMeterFactory();
+        using var service = new MetricsSnapshotService(
+            meters,
+            _clock,
+            scopeFactory: null,
+            Options.Create(new DatabaseOptions()),
+            Options.Create(new RateLimitingOptions()),
+            new HostingEnvironment { EnvironmentName = "Test" },
+            new ConfigurationBuilder().Build(),
+            NullLogger<MetricsSnapshotService>.Instance);
+        service.StartListening();
+        var duration = meters.Create(new MeterOptions("Microsoft.AspNetCore.Hosting")).CreateHistogram<double>("http.server.request.duration", unit: "s");
+        _clock.Set(Start.AddSeconds(40));
+        for (var i = 0; i < 3; i++)
+        {
+            duration.Record(0.01, new KeyValuePair<string, object?>("http.response.status_code", 200));
+        }
+
+        _clock.Set(Start.AddSeconds(65));
+        var window = service.GetSnapshot().Http.Last60s;
+
+        // 12:00:30 to 12:01:00 is 30 s of uptime in that minute: 3 requests / 30 s.
+        Assert.Equal(3, window.Requests);
+        Assert.Equal(0.1, window.PerSecond);
+    }
+
+    [Fact]
+    public void Enrolment_rejections_are_read_by_the_catalogue_reasons()
+    {
+        var metrics = new RushDayMetrics(_meters);
+        foreach (var reason in RushDayMetrics.RejectionReasons.All)
+        {
+            metrics.EnrolmentsRejected.Add(1, new KeyValuePair<string, object?>("reason", reason));
+        }
+
+        var rejected = _service.GetSnapshot().Enrolment.Rejected;
+
+        Assert.Equal(new EnrolmentRejections(1, 1, 1, 1, 1, 2), rejected);
+        Assert.Equal(["module_full", "already_enrolled", "window_closed", "credit_limit", "results_exist", "student_left", "module_inactive"], RushDayMetrics.RejectionReasons.All);
+    }
+
+    /// <summary>
+    /// The data-quality queries run only while someone polls the ops snapshot, so an idle deployment lets Neon's
+    /// compute suspend: no attempt before the first poll, one at once on it, and none once polling stopped.
+    /// </summary>
+    [Fact]
+    public async Task Data_quality_is_refreshed_only_while_the_snapshot_is_polled()
+    {
+        var clock = new FakeTimeProvider(Start);
+        var scopes = new CountingScopeFactory();
+        using var meters = new TestMeterFactory();
+        using var service = new MetricsSnapshotService(
+            meters,
+            clock,
+            scopes,
+            Options.Create(new DatabaseOptions()),
+            Options.Create(new RateLimitingOptions()),
+            new HostingEnvironment { EnvironmentName = "Test" },
+            new ConfigurationBuilder().Build(),
+            NullLogger<MetricsSnapshotService>.Instance);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            for (var tick = 0; tick < 5; tick++)
+            {
+                await Task.Delay(50);
+                clock.Advance(MetricsSnapshotService.DataQualityInterval);
+            }
+
+            await Task.Delay(200);
+            Assert.Equal(0, scopes.Created);
+
+            _ = service.GetSnapshot();
+            await WaitUntilAsync(() => scopes.Created >= 1);
+            await WaitUntilAsync(() => service.GetSnapshot().DataQuality.StaleSince is not null);
+
+            // Nobody polls any more: after the polling window the timer stops querying.
+            clock.Advance(MetricsSnapshotService.PollingWindow + TimeSpan.FromSeconds(1));
+            await Task.Delay(200);
+            var afterIdle = scopes.Created;
+            for (var tick = 0; tick < 5; tick++)
+            {
+                clock.Advance(MetricsSnapshotService.DataQualityInterval);
+                await Task.Delay(50);
+            }
+
+            await Task.Delay(200);
+            Assert.Equal(afterIdle, scopes.Created);
+            Assert.False(service.IsBeingPolled(clock.GetUtcNow()));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
     }
 
     [Fact]
@@ -271,8 +374,43 @@ public sealed class MetricsSnapshotServiceTests : IDisposable
     public void Histogram_percentile_of_an_empty_histogram_is_zero() =>
         Assert.Equal(0, new HistogramAggregate().Percentile(0.95));
 
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The condition did not become true within 10 s.");
+            await Task.Delay(20);
+        }
+    }
+
     private void Request(double milliseconds, int status) =>
         _requestDuration.Record(milliseconds / 1000d, new KeyValuePair<string, object?>("http.response.status_code", status));
+
+    /// <summary>Counts refresh attempts; its scopes resolve nothing, so every attempt fails and marks the data stale.</summary>
+    private sealed class CountingScopeFactory : IServiceScopeFactory
+    {
+        private int _created;
+
+        public int Created => Volatile.Read(ref _created);
+
+        public IServiceScope CreateScope()
+        {
+            Interlocked.Increment(ref _created);
+            return new EmptyScope();
+        }
+
+        private sealed class EmptyScope : IServiceScope, IServiceProvider
+        {
+            public IServiceProvider ServiceProvider => this;
+
+            public object? GetService(Type serviceType) => null;
+
+            public void Dispose()
+            {
+            }
+        }
+    }
 
     private sealed class ManualClock(DateTimeOffset start) : TimeProvider
     {

@@ -1,6 +1,7 @@
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using RushDay.Api.Observability;
+using RushDay.Infrastructure.Caching;
 
 namespace RushDay.UnitTests.Observability;
 
@@ -54,6 +55,28 @@ public sealed class DbCommandCounterTests
         ExecuteReader(counter);
 
         Assert.Equal(0, counter.Count);
+    }
+
+    /// <summary>A request that fills a cache is measured by its own commands only (04 section 6.1).</summary>
+    [Fact]
+    public async Task Commands_inside_a_cache_fill_are_not_counted()
+    {
+        var counter = new DbCommandCounter();
+        counter.Reset();
+
+        await ChildAsync(counter);
+        var filled = await CacheFill.RunAsync(
+            async _ =>
+            {
+                await ChildAsync(counter);
+                return CacheFill.InProgress;
+            },
+            CancellationToken.None);
+        ExecuteReader(counter);
+
+        Assert.True(filled);
+        Assert.False(CacheFill.InProgress);
+        Assert.Equal(3, counter.Count);
     }
 
     [Fact]

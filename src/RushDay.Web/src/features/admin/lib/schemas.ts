@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from '@/lib/zod'
 
 /**
  * Client validation for the administrator forms. Each mirrors the request rules of 02-api.md

@@ -104,6 +104,36 @@ describe('AuditLogPage', () => {
     expect(within(table).getByText('50')).toBeInTheDocument()
   })
 
+  it('names a UUID subject by its username or a short id, keeping the full id in the details', async () => {
+    const accountId = '01a0ece5-2a62-7a28-9a3a-da97b77d1336'
+    const gradeId = '01a0ecef-aa1f-7ee6-8d55-e1992a4818bc'
+    const mock = createAdminMock({
+      audit: [
+        makeAuditEvent({
+          id: 'e1',
+          action: 'account.provisioned',
+          subjectType: 'Account',
+          subjectId: accountId,
+          details: { username: 'S981422' },
+        }),
+        makeAuditEvent({
+          id: 'e2',
+          action: 'grade.corrected',
+          subjectType: 'Grade',
+          subjectId: gradeId,
+          details: { reason: 'Moderation' },
+        }),
+      ],
+    })
+    const { events } = render('/admin/audit', mock)
+    const table = await screen.findByRole('table', { name: 'Audit log' })
+    expect(within(table).getByText('Account S981422')).toBeInTheDocument()
+    expect(within(table).getByText('Grade 01a0ecef…')).toBeInTheDocument()
+    expect(within(table).queryByText(`Grade ${gradeId}`)).not.toBeInTheDocument()
+    await events.click(within(table).getByRole('button', { name: /Details\s*of Mark corrected/ }))
+    expect(within(table).getByText(gradeId)).toBeInTheDocument()
+  })
+
   it('downloads the CSV with the same filters and says when it was truncated', async () => {
     Object.defineProperty(URL, 'createObjectURL', {
       configurable: true,

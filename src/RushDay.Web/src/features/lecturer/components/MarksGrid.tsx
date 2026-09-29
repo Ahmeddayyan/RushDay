@@ -1,6 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { Lock } from 'lucide-react'
-import { z } from 'zod'
+import { z } from '@/lib/zod'
 
 import type { GradeOutcome, MarksStatusValue } from '@/api/types/common'
 import type { MarksRow } from '@/api/types/lecturer'
@@ -28,10 +36,16 @@ import { formatDateTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { useDebouncedValue } from '@/lib/useDebouncedValue'
 import { useDirtyForm } from '@/lib/useDirtyForm'
+import { useMediaQuery } from '@/lib/useMediaQuery'
 
 import { useMarks } from '../hooks/useMarks'
 import { type DirtyMarkRow, useSaveMarks } from '../hooks/useSaveMarks'
-import { clearMarksMirror, readMarksMirror, useMarksMirror, type MarksMirror } from '../hooks/useMarksMirror'
+import {
+  clearMarksMirror,
+  readMarksMirror,
+  useMarksMirror,
+  type MarksMirror,
+} from '../hooks/useMarksMirror'
 
 const markSchema = z.coerce.number().int().min(0).max(100)
 
@@ -49,13 +63,28 @@ export interface MarksGridProps {
   q: string
   onPageChange: (page: number) => void
   onQueryChange: (q: string) => void
-  /** The Submit button/dialog, rendered next to Save (leader-only; MarksTab decides). */
-  submitSlot?: ReactNode
+  /**
+   * The Submit button/dialog, rendered next to Save (leader-only; MarksTab decides). Given the number
+   * of unsaved changes, so submitting cannot silently leave edits behind.
+   */
+  submitSlot?: ((unsaved: number) => ReactNode) | undefined
   timeZone?: string
 }
 
 interface RowError {
   message: string
+  /**
+   * A validation error: the row is not sent until it is corrected. A server outcome (a chunk that
+   * failed, a stale version) never blocks: pressing Save again resends the row.
+   */
+  blocking: boolean
+}
+
+/** The stored value of a row, in words: "77", "Absent", or "no mark". */
+function storedValue(row: MarksRow): string {
+  if (row.outcome === 'absent') return 'Absent'
+  if (row.outcome === 'deferred') return 'Deferred'
+  return row.mark !== null ? String(row.mark) : 'no mark'
 }
 
 function digitsOnly(raw: string): string {
@@ -78,6 +107,7 @@ export function MarksGrid({
   submitSlot,
   timeZone,
 }: MarksGridProps) {
+  const phone = useMediaQuery('(max-width: 767.98px)')
   const debouncedQ = useDebouncedValue(q, 250)
   const sheetQuery = useMarks(code, { q: debouncedQ, page })
   const saveMutation = useSaveMarks(code)
@@ -95,8 +125,14 @@ export function MarksGrid({
     const nextDirty: Record<string, DirtyMarkRow> = {}
     const nextText: Record<string, string> = {}
     for (const [studentNumber, entry] of Object.entries(mirror)) {
-      nextDirty[studentNumber] = { studentNumber, mark: entry.mark, outcome: entry.outcome, version: entry.version }
-      nextText[studentNumber] = entry.outcome === 'mark' && entry.mark !== null ? String(entry.mark) : ''
+      nextDirty[studentNumber] = {
+        studentNumber,
+        mark: entry.mark,
+        outcome: entry.outcome,
+        version: entry.version,
+      }
+      nextText[studentNumber] =
+        entry.outcome === 'mark' && entry.mark !== null ? String(entry.mark) : ''
     }
     return { dirty: nextDirty, markText: nextText, count: Object.keys(nextDirty).length }
   })
@@ -149,7 +185,7 @@ export function MarksGrid({
     })
   }
 
-  function setRowError(studentNumber: string, message: string | null) {
+  function setRowError(studentNumber: string, message: string | null, blocking = true) {
     setRowErrors((prev) => {
       if (message === null) {
         if (!(studentNumber in prev)) return prev
@@ -157,12 +193,23 @@ export function MarksGrid({
         delete next[studentNumber]
         return next
       }
-      return { ...prev, [studentNumber]: { message } }
+      return { ...prev, [studentNumber]: { message, blocking } }
+    })
+  }
+
+  /** Editing a row again after a conflict: it is the lecturer's value now, no longer "stale". */
+  function clearStale(studentNumber: string) {
+    setStaleNumbers((prev) => {
+      if (!prev.has(studentNumber)) return prev
+      const next = new Set(prev)
+      next.delete(studentNumber)
+      return next
     })
   }
 
   function applyMarkText(row: MarksRow, raw: string) {
     const digits = digitsOnly(raw)
+    clearStale(row.studentNumber)
     setMarkText((prev) => ({ ...prev, [row.studentNumber]: digits }))
     if (digits === '') {
       setRowError(row.studentNumber, 'Enter a mark from 0 to 100.')
@@ -180,9 +227,13 @@ export function MarksGrid({
   }
 
   function handleOutcomeChange(row: MarksRow, value: GradeOutcome) {
+    clearStale(row.studentNumber)
     if (value === 'mark') {
       const fallback = row.outcome === 'mark' ? row.mark : null
-      setMarkText((prev) => ({ ...prev, [row.studentNumber]: fallback !== null ? String(fallback) : '' }))
+      setMarkText((prev) => ({
+        ...prev,
+        [row.studentNumber]: fallback !== null ? String(fallback) : '',
+      }))
       setRowError(row.studentNumber, null)
       updateDirty(row, { outcome: 'mark', mark: fallback })
     } else {
@@ -222,9 +273,11 @@ export function MarksGrid({
     // A previous stale-mark conflict may since have been resolved by a background refetch of this
     // module's marks: reconcile against the freshest known version before sending, so a lecturer who
     // simply presses Save again does not hit the same conflict a second time.
-    const freshByNumber = new Map((sheetQuery.data?.rows ?? []).map((row) => [row.studentNumber, row]))
+    const freshByNumber = new Map(
+      (sheetQuery.data?.rows ?? []).map((row) => [row.studentNumber, row]),
+    )
     const rows = Object.values(dirty)
-      .filter((row) => !rowErrors[row.studentNumber])
+      .filter((row) => !rowErrors[row.studentNumber]?.blocking)
       .map((row) => {
         const fresh = freshByNumber.get(row.studentNumber)
         return fresh && fresh.version !== row.version ? { ...row, version: fresh.version } : row
@@ -243,19 +296,29 @@ export function MarksGrid({
       return next
     })
 
+    for (const studentNumber of result.savedStudentNumbers) setRowError(studentNumber, null)
+    // Stale rows stay dirty and highlighted with the stored value shown (render); the next Save
+    // sends them with the fresh version, so it goes through.
     if (result.staleStudentNumbers.length > 0) {
       setStaleNumbers((prev) => new Set([...prev, ...result.staleStudentNumbers]))
-      for (const studentNumber of result.staleStudentNumbers) {
-        setRowError(studentNumber, 'Someone else changed this mark. Review the highlighted row and save again.')
-      }
+      for (const studentNumber of result.staleStudentNumbers) setRowError(studentNumber, null)
     }
+    // A student who is no longer enrolled can never be saved: drop the edit rather than leave an
+    // unsaved change that no Save can clear. The row explains why (it now shows as withdrawn).
     if (result.notEnrolledStudentNumbers.length > 0) {
-      for (const studentNumber of result.notEnrolledStudentNumbers) {
-        setRowError(studentNumber, 'This student is no longer enrolled.')
+      const gone = new Set(result.notEnrolledStudentNumbers)
+      setDirty((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => !gone.has(key))))
+      setMarkText((prev) =>
+        Object.fromEntries(Object.entries(prev).filter(([key]) => !gone.has(key))),
+      )
+      for (const studentNumber of gone) {
+        setRowError(studentNumber, 'Not saved: this student is no longer enrolled.', false)
       }
     }
     if (result.chunkError) {
-      for (const studentNumber of result.chunkErrorStudentNumbers) setRowError(studentNumber, result.chunkError)
+      for (const studentNumber of result.chunkErrorStudentNumbers) {
+        setRowError(studentNumber, result.chunkError, false)
+      }
     }
 
     if (result.savedStudentNumbers.length > 0) {
@@ -269,9 +332,14 @@ export function MarksGrid({
 
     const saved = result.savedStudentNumbers.length
     const failed = result.requested - saved
+    const stale = result.staleStudentNumbers.length
     if (failed === 0) {
       toast.success(`Saved ${saved} ${saved === 1 ? 'change' : 'changes'}.`)
       clearMarksMirror(code)
+    } else if (stale === failed && saved === 0) {
+      toast.error(
+        `Someone else changed ${stale} ${stale === 1 ? 'mark' : 'marks'}. Review the highlighted ${stale === 1 ? 'row' : 'rows'} and save again.`,
+      )
     } else {
       toast.error(`Saved ${saved} of ${result.requested} changes; ${failed} need attention.`)
     }
@@ -289,7 +357,13 @@ export function MarksGrid({
       </LoadingRegion>
     )
   } else if (sheetQuery.isError) {
-    body = <ErrorState error={sheetQuery.error} context={{ code }} onRetry={() => void sheetQuery.refetch()} />
+    body = (
+      <ErrorState
+        error={sheetQuery.error}
+        context={{ code }}
+        onRetry={() => void sheetQuery.refetch()}
+      />
+    )
   } else if (sheetQuery.data.rows.length === 0) {
     body = (
       <EmptyState
@@ -319,8 +393,9 @@ export function MarksGrid({
               const outcomeValue = edit?.outcome ?? row.outcome ?? 'mark'
               const isDirty = Boolean(edit)
               const isStale = staleNumbers.has(row.studentNumber)
-              const rowError = rowErrors[row.studentNumber]?.message
-              const markValue = markText[row.studentNumber] ?? (row.mark !== null ? String(row.mark) : '')
+              const rowError = rowErrors[row.studentNumber]
+              const markValue =
+                markText[row.studentNumber] ?? (row.mark !== null ? String(row.mark) : '')
 
               return (
                 <TableRow
@@ -357,33 +432,46 @@ export function MarksGrid({
                     {isActive ? (
                       <div className="flex flex-col items-end gap-1">
                         <div className="flex items-center gap-2">
-                          <input
-                            ref={(element) => {
-                              inputRefs.current[rowIndex] = element
-                            }}
-                            aria-label={`Mark for ${row.fullName}`}
-                            type="text"
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                            maxLength={3}
-                            value={markValue}
-                            disabled={locked || outcomeValue !== 'mark'}
-                            aria-invalid={rowError ? true : undefined}
-                            onChange={(event) => applyMarkText(row, event.target.value)}
-                            onKeyDown={(event) => handleKeyDown(event, rowIndex)}
-                            onPaste={(event) => handlePaste(event, rowIndex)}
-                            className={controlClassName('h-10 w-20 text-right tabular-nums')}
-                          />
-                          {locked && <Lock aria-hidden="true" className="size-4 shrink-0 text-muted" />}
+                          {/* The width lives on a wrapper: the control class sets w-full. */}
+                          <div className="w-20">
+                            <input
+                              ref={(element) => {
+                                inputRefs.current[rowIndex] = element
+                              }}
+                              aria-label={`Mark for ${row.fullName}`}
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              maxLength={3}
+                              value={markValue}
+                              disabled={locked || outcomeValue !== 'mark'}
+                              aria-invalid={rowError?.blocking ? true : undefined}
+                              onChange={(event) => applyMarkText(row, event.target.value)}
+                              onKeyDown={(event) => handleKeyDown(event, rowIndex)}
+                              onPaste={(event) => handlePaste(event, rowIndex)}
+                              className={controlClassName('h-10 text-right tabular-nums')}
+                            />
+                          </div>
+                          {locked && (
+                            <Lock aria-hidden="true" className="size-4 shrink-0 text-muted" />
+                          )}
                         </div>
                         {rowError && (
-                          <p role="alert" className="max-w-40 text-right text-xs text-danger">
-                            {rowError}
+                          <p
+                            role="alert"
+                            className={cn(
+                              'max-w-56 text-right text-xs',
+                              rowError.blocking ? 'text-danger' : 'text-warning',
+                            )}
+                          >
+                            {rowError.message}
                           </p>
                         )}
                         {isStale && !rowError && (
-                          <p className="max-w-40 text-right text-xs text-warning">
-                            Server value: {row.mark ?? row.outcome ?? 'none'}
+                          <p role="alert" className="max-w-56 text-right text-xs text-warning">
+                            Changed to {storedValue(row)}
+                            {row.enteredBy ? ` by ${row.enteredBy}` : ''} while you were editing.
+                            Save again to keep yours.
                           </p>
                         )}
                       </div>
@@ -410,18 +498,32 @@ export function MarksGrid({
     )
   }
 
+  const actions = (
+    <>
+      <p aria-live="polite" className="text-sm text-muted tabular-nums">
+        {dirtyCount > 0 ? `${dirtyCount} unsaved` : 'All changes saved'}
+      </p>
+      <Button
+        onClick={() => void handleSave()}
+        disabled={dirtyCount === 0 || locked}
+        loading={saveMutation.isPending}
+      >
+        Save marks
+      </Button>
+      {submitSlot?.(dirtyCount)}
+    </>
+  )
+
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted">Rows are in student-number order, active students first.</p>
       {restoredCount !== null && restoredCount > 0 && (
-        <div role="status" className="rounded-md border border-info/30 bg-info-soft px-3.5 py-2.5 text-sm text-info">
+        <div
+          role="status"
+          className="rounded-md border border-info/30 bg-info-soft px-3.5 py-2.5 text-sm text-info"
+        >
           Restored {restoredCount} unsaved {restoredCount === 1 ? 'mark' : 'marks'} from before you
           were signed out.
-        </div>
-      )}
-      {locked && (
-        <div className="rounded-md border border-border bg-surface-2 px-3.5 py-2.5 text-sm text-muted">
-          Marks for this module are locked and can&apos;t be edited here.
         </div>
       )}
       <div className="flex flex-wrap items-center gap-3">
@@ -432,17 +534,7 @@ export function MarksGrid({
           placeholder="Number or name"
           className="min-w-56 flex-1"
         />
-        <p aria-live="polite" className="text-sm text-muted tabular-nums">
-          {dirtyCount > 0 ? `${dirtyCount} unsaved` : 'All changes saved'}
-        </p>
-        <Button
-          onClick={() => void handleSave()}
-          disabled={dirtyCount === 0 || locked}
-          loading={saveMutation.isPending}
-        >
-          Save marks
-        </Button>
-        {submitSlot}
+        {!phone && actions}
       </div>
       {sheetQuery.data && (
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
@@ -463,6 +555,14 @@ export function MarksGrid({
           itemLabel="students"
           busy={sheetQuery.isFetching}
         />
+      )}
+      {phone && (
+        // On a phone the rows are cards and a page is long: Save stays within reach at the bottom
+        // (05-frontend.md section 9.3). Its height is covered by the page's scroll-padding-bottom
+        // (styles/app.css), so a focused mark input is never hidden under it.
+        <div className="sticky bottom-0 z-20 -mx-4 flex flex-wrap items-center justify-end gap-3 border-t border-border bg-surface/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-surface/85">
+          {actions}
+        </div>
       )}
     </div>
   )

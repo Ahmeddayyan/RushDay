@@ -43,8 +43,8 @@ function NextStep({
       ) : (
         <span className="flex flex-wrap items-center gap-2">
           <span className="text-warning">
-            Submitted, {formatNumber(marks.missing)} marks missing (students added after
-            submission):
+            Submitted, {formatNumber(marks.missing)} marks missing (a student without a submitted
+            mark):
           </span>
           {returnButton}
         </span>
@@ -124,11 +124,9 @@ export function SubmissionProgressTable({
               {formatNumber(module.marks.entered)} / {formatNumber(module.marks.missing)}
             </TableCell>
             <TableCell label="Status">
-              <MarksStatusChip
-                status={module.marks.status}
-                publishedAt={module.marks.publishedAt}
-                timeZone={timeZone}
-              />
+              {/* The instant of a scheduled publication is in the next step beside it, so the chip
+                  stays short and the title and leader columns keep their width. */}
+              <MarksStatusChip status={module.marks.status} />
             </TableCell>
             <TableCell label="Next step" className="text-sm">
               <NextStep module={module} timeZone={timeZone} onReturnToDraft={onReturnToDraft} />

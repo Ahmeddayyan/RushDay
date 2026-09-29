@@ -63,9 +63,9 @@ export function AnnouncementsCard({ announcements, timeZone }: AnnouncementsCard
                 >
                   {announcement.title}
                 </h3>
-                <p className="mt-0.5 line-clamp-2 text-sm whitespace-pre-line text-muted">
-                  {announcement.body}
-                </p>
+                {/* A two-line preview reads as running text: line breaks (a blank line clamped to
+                    a lone ellipsis) are for the full announcement page. */}
+                <p className="mt-0.5 line-clamp-2 text-sm text-muted">{announcement.body}</p>
               </article>
             </li>
           ))}

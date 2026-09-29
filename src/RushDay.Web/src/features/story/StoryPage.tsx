@@ -34,28 +34,32 @@ export function Component() {
   const githubUrl = index.data?.links.github ?? 'https://github.com/Ahmeddayyan/RushDay'
 
   return (
-    <div className="max-w-3xl space-y-8">
-      <PageHeader
-        title="How RushDay holds up under load"
-        description="The measured story of a portal that used to fall over on results day, and what changed."
-      />
+    // One centred column: the chart cards use its full width (1152 px) while the prose keeps a
+    // readable measure (max-w-3xl, about 75 characters).
+    <div className="mx-auto w-full max-w-6xl space-y-8">
+      <div className="max-w-3xl space-y-6">
+        <PageHeader
+          title="How RushDay holds up under load"
+          description="The measured story of a portal that used to fall over on results day, and what changed."
+        />
 
-      <blockquote className="space-y-2 border-l-4 border-primary pl-4 text-lg text-text">
-        <p>
-          I built RushDay because my own university&apos;s portal fell over every results day and
-          enrolment window. I wanted to understand why that happens and to build a portal that
-          doesn&apos;t crash under the same load.
-        </p>
-        <cite className="block text-sm font-medium text-muted not-italic">
-          Ahmed Ayyan, creator of RushDay
-        </cite>
-      </blockquote>
+        <blockquote className="space-y-2 border-l-4 border-primary pl-4 text-lg text-text">
+          <p>
+            I built RushDay because my own university&apos;s portal fell over every results day and
+            enrolment window. I wanted to understand why that happens and to build a portal that
+            doesn&apos;t crash under the same load.
+          </p>
+          <cite className="block text-sm font-medium text-muted not-italic">
+            Ahmed Ayyan, creator of RushDay
+          </cite>
+        </blockquote>
+      </div>
 
       <Card>
         <CardHeader>
           <CardTitle>What actually happened</CardTitle>
         </CardHeader>
-        <div className="space-y-3 text-sm text-muted">
+        <div className="max-w-3xl space-y-3 text-base leading-7 text-muted">
           <p>
             <strong className="text-text">The baseline.</strong> The first version of RushDay was
             built the way a lot of student projects are built: correct-looking code, no load

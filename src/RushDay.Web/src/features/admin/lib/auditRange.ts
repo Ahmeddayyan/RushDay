@@ -1,4 +1,4 @@
-import { startOfZonedDay, toApiInstant, toZonedInput, zonedInputToMs } from './zonedTime'
+import { startOfZonedDay, toApiInstant, toZonedInput, zonedInputToMs } from '@/lib/zonedTime'
 
 /** The audit log's filters as URL parameters (05-frontend.md section 10: "URL-synced"). */
 export const AUDIT_FILTER_KEYS = [

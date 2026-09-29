@@ -178,8 +178,12 @@ export function useEnrol(code: string): EnrolControl {
       }
       const semester = findModule(queryClient, code)?.semester
       toast.error(
-        describeProblem(error, { code, ownSession: true, ...(semester ? { semester } : {}) })
-          .message,
+        describeProblem(error, {
+          code,
+          ownSession: true,
+          enrolment: true,
+          ...(semester ? { semester } : {}),
+        }).message,
       )
     },
   })

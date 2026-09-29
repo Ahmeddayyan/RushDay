@@ -29,7 +29,7 @@ import {
   zonedInputToInstant,
   zonedInputToMs,
   zoneOffsetMs,
-} from './zonedTime'
+} from '@/lib/zonedTime'
 
 const LONDON = 'Europe/London'
 

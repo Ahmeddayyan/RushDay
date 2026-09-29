@@ -95,6 +95,7 @@ export function Component() {
           onPageChange={(next) => update({ page: next })}
           itemLabel="events"
           busy={query.isPlaceholderData}
+          beyondLimitHint="Narrow the dates or the filters, or export the CSV, to reach older events."
         />
       </div>
     )

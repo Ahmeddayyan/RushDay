@@ -1,9 +1,10 @@
 import type { ComponentPropsWithRef, ReactNode } from 'react'
 
-import { FormField, Input } from '@/components/ui'
 import { formatDateTime } from '@/lib/format'
+import { zonedInputToMs } from '@/lib/zonedTime'
 
-import { zonedInputToMs } from '../lib/zonedTime'
+import { FormField } from './FormField'
+import { Input } from './Input'
 
 export interface ZonedDateTimeFieldProps {
   label: string
@@ -19,7 +20,7 @@ export interface ZonedDateTimeFieldProps {
 /**
  * A `datetime-local` input whose value is wall-clock time in the institution's zone, with the zone
  * named in the label and the instant read back with its zone abbreviation ("Reads as 28 September
- * 2026 at 09:00 (BST)"), so an administrator abroad never schedules results for the wrong hour.
+ * 2026 at 09:00 (BST)"), so an administrator or lecturer abroad never schedules for the wrong hour.
  */
 export function ZonedDateTimeField({
   label,

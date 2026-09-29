@@ -7,10 +7,12 @@ export interface WordmarkProps {
   to?: string
   size?: 'md' | 'lg'
   className?: string
+  /** Classes for the name, e.g. to hide it visually on very narrow screens (it stays readable). */
+  nameClassName?: string
 }
 
 /** The RushDay mark (the favicon's bolt) and name. Decorative mark, real text. */
-export function Wordmark({ to, size = 'md', className }: WordmarkProps) {
+export function Wordmark({ to, size = 'md', className, nameClassName }: WordmarkProps) {
   const content = (
     <>
       <svg
@@ -26,6 +28,7 @@ export function Wordmark({ to, size = 'md', className }: WordmarkProps) {
         className={cn(
           'font-semibold tracking-tight text-text',
           size === 'lg' ? 'text-2xl' : 'text-lg',
+          nameClassName,
         )}
       >
         RushDay

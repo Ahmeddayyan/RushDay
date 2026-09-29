@@ -318,7 +318,9 @@ describe('ModulesAdminPage and ModuleEditDialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Edit CS3099' })
     expect(within(dialog).getByLabelText(/^Semester/)).toBeDisabled()
     expect(
-      within(dialog).getByText('Cannot change while 18 students are enrolled'),
+      within(dialog).getByText(
+        "Can't change: 18 students are enrolled this year. Create a new module instead.",
+      ),
     ).toBeInTheDocument()
 
     const credits = within(dialog).getByLabelText(/^Credits/)

@@ -1,7 +1,7 @@
 import type { RouteObject } from 'react-router'
 
 import { ErrorBoundary } from '@/app/ErrorBoundary'
-import { PublicOnly, RequireAuth } from '@/app/guards'
+import { BootSplash, PublicOnly, RequireAuth } from '@/app/guards'
 import { AppShell } from '@/components/layout/AppShell'
 
 /**
@@ -14,11 +14,13 @@ export const authRoutes: RouteObject[] = [
   {
     element: <PublicOnly />,
     errorElement: <ErrorBoundary />,
+    hydrateFallbackElement: <BootSplash />,
     children: [{ path: '/login', lazy: () => import('./LoginPage') }],
   },
   {
     element: <RequireAuth />,
     errorElement: <ErrorBoundary />,
+    hydrateFallbackElement: <BootSplash />,
     children: [
       {
         element: <AppShell />,

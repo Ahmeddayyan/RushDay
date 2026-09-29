@@ -24,11 +24,14 @@ export interface AlertDialogContentProps extends Omit<
   title: ReactNode
   /** The consequence, in one or two sentences. */
   description: ReactNode
+  /** A wider panel for a confirmation that carries a form (publishing results); a sheet below 640 px. */
+  size?: 'default' | 'wide'
 }
 
 export function AlertDialogContent({
   title,
   description,
+  size = 'default',
   className,
   children,
   ...props
@@ -37,7 +40,11 @@ export function AlertDialogContent({
     <RadixAlertDialog.Portal>
       <RadixAlertDialog.Overlay className={overlayClassName} />
       <RadixAlertDialog.Content
-        className={cn(panelClassName, 'sm:max-w-[480px]', className)}
+        className={cn(
+          panelClassName,
+          size === 'wide' ? 'sm:max-w-[600px]' : 'sm:max-w-[480px]',
+          className,
+        )}
         {...props}
       >
         <div className="space-y-2 px-5 pt-5 sm:px-6 sm:pt-6">
@@ -58,7 +65,7 @@ export function AlertDialogFooter({ className, ...props }: ComponentProps<'div'>
   return (
     <div
       className={cn(
-        'mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end [&>*]:w-full sm:[&>*]:w-auto',
+        'mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end [&>*]:w-full sm:[&>*]:w-auto',
         className,
       )}
       {...props}

@@ -207,9 +207,13 @@ function ModuleForm({ module, onDone }: { module: AdminModule | null; onDone: ()
         required
         error={errors.semester?.message}
         hint={
+          // The server refuses a semester change once the module has enrolments or marks in any
+          // year (S6 review), not only this year's: say so before the administrator tries.
           semesterLocked
-            ? `Cannot change while ${enrolled} students are enrolled`
-            : 'Decides which timetable and credit budget the module counts towards.'
+            ? `Can't change: ${enrolled} students are enrolled this year. Create a new module instead.`
+            : editing
+              ? "Decides which timetable and credit budget the module counts towards. Can't change once any student has enrolled, in any year."
+              : 'Decides which timetable and credit budget the module counts towards.'
         }
       >
         <Select {...register('semester')} options={SEMESTERS} disabled={semesterLocked} />
@@ -236,7 +240,7 @@ function ModuleForm({ module, onDone }: { module: AdminModule | null; onDone: ()
 
 /**
  * "New module" and "Edit" (05-frontend.md section 10, `/admin/modules`): the credits and capacity
- * warnings, and the semester locked while students are enrolled; the server enforces both rules.
+ * warnings, and the semester locked once students have enrolled; the server enforces both rules.
  */
 export function ModuleEditDialog({
   open,

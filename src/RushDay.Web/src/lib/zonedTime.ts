@@ -2,7 +2,8 @@ import { DEFAULT_TIME_ZONE } from '@/lib/format'
 
 /**
  * Wall-clock time in the institution's zone (D26). Administrators type windows and publication
- * instants as the registry reads them ("09:00 in Europe/London"), in `<input type="datetime-local">`,
+ * instants, and lecturers announcement times, as the registry reads them ("09:00 in
+ * Europe/London"), in `<input type="datetime-local">`,
  * whatever zone their own computer is in; the API takes UTC instants with three fractional digits.
  * Intl only, no date library (05-frontend.md section 1).
  */

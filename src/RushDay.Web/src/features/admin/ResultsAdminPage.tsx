@@ -193,7 +193,7 @@ export function Component() {
       ? 'now'
       : `at ${formatDateTime(result.publication.publishAt, timeZone)}`
     toast.success(
-      `Published: ${countOf(result.published.modules, 'module', 'modules')}, ${countOf(result.published.grades, 'mark', 'marks')}. Students see them ${when}.`,
+      `${publishedNow ? 'Published' : 'Scheduled'}: ${countOf(result.published.modules, 'module', 'modules')}, ${countOf(result.published.grades, 'mark', 'marks')}. Students see them ${when}.`,
       {
         action: {
           label: 'View in history',
@@ -253,6 +253,18 @@ export function Component() {
     const anySubmitted = data.modules.some((module) =>
       ['submitted', 'scheduled', 'published'].includes(module.marks.status),
     )
+    const stillOpen = data.modules.some(
+      (module) => module.marks.status === 'draft' || module.marks.status === 'submitted',
+    )
+    const ready = preview.modules.length
+    const summary =
+      ready > 0
+        ? `${countOf(ready, 'module', 'modules')} (${countOf(preview.grades, 'mark', 'marks')}) ${ready === 1 ? 'is' : 'are'} ready to publish for ${target}.`
+        : !anySubmitted
+          ? `Nothing submitted for ${target} yet; lecturers submit modules from their Marks page.`
+          : !stillOpen
+            ? `Everything submitted for ${target} is scheduled or published.`
+            : `No submitted module is ready to publish for ${target} yet.`
     content = (
       <Refetching active={query.isFetching}>
         <div className="flex flex-col gap-8">
@@ -269,17 +281,8 @@ export function Component() {
               }
             >
               <CardTitle id={progressHeadingId}>Submission progress</CardTitle>
-              <CardDescription>
-                {preview.modules.length > 0
-                  ? `${formatNumber(preview.modules.length)} modules (${formatNumber(preview.grades)} marks) are ready to publish for ${target}.`
-                  : `No submitted modules are ready to publish for ${target}. Lecturers submit modules from their Marks page.`}
-              </CardDescription>
+              <CardDescription>{summary}</CardDescription>
             </CardHeader>
-            {!anySubmitted && shown.length > 0 && (
-              <p className="mb-4 text-sm text-muted">
-                Nothing submitted for {target} yet; lecturers submit from their Marks page.
-              </p>
-            )}
             {shown.length === 0 ? (
               <EmptyState
                 compact

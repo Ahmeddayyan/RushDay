@@ -141,7 +141,9 @@ export function LiveTiles({ history, stale = false }: LiveTilesProps) {
             <p className="font-mono text-[11px] text-subtle">{tile.caption}</p>
             <Sparkline values={values} />
             <p className="text-[11px] text-muted">
-              Last {values.length} samples: {tile.format(min)}–{tile.format(max)}
+              {values.length === 1
+                ? 'The trend fills in every 5 seconds.'
+                : `Last ${values.length} samples: ${tile.format(min)}–${tile.format(max)}`}
             </p>
             <span className="sr-only">{tile.description}</span>
           </div>

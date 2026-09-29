@@ -226,7 +226,7 @@ export function Component() {
           role="search"
           aria-label="Filter modules"
           onSubmit={(event) => event.preventDefault()}
-          className="grid grid-cols-2 gap-3 lg:grid-cols-[minmax(0,2fr)_repeat(4,minmax(0,1fr))]"
+          className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_minmax(0,1.3fr)]"
         >
           <SearchInput
             label="Search by code or title"
@@ -234,7 +234,7 @@ export function Component() {
             value={search}
             onChange={setSearch}
             placeholder="CS3099 or Databases"
-            className="col-span-2 lg:col-span-1"
+            className="col-span-2 md:col-span-4 xl:col-span-1"
           />
           <FormField label="Semester">
             <Select
@@ -265,7 +265,8 @@ export function Component() {
                 { value: '', label: 'All' },
                 ...DEPARTMENT_CODES.map((code) => ({
                   value: code,
-                  label: `${code} · ${DEPARTMENTS[code]}`,
+                  // The name alone: the code is already the first letters of every module code.
+                  label: DEPARTMENTS[code],
                 })),
               ]}
             />

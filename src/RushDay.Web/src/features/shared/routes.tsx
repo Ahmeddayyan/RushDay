@@ -1,7 +1,7 @@
 import type { RouteObject } from 'react-router'
 
 import { ErrorBoundary } from '@/app/ErrorBoundary'
-import { RequireAuth } from '@/app/guards'
+import { BootSplash, RequireAuth } from '@/app/guards'
 import { AppShell } from '@/components/layout/AppShell'
 
 /**
@@ -12,6 +12,7 @@ export const sharedRoutes: RouteObject[] = [
   {
     element: <AppShell />,
     errorElement: <ErrorBoundary />,
+    hydrateFallbackElement: <BootSplash />,
     children: [
       { path: '/accessibility', lazy: () => import('./AccessibilityPage') },
       { path: '/forbidden', lazy: () => import('./ForbiddenPage') },
@@ -21,6 +22,7 @@ export const sharedRoutes: RouteObject[] = [
   {
     element: <RequireAuth />,
     errorElement: <ErrorBoundary />,
+    hydrateFallbackElement: <BootSplash />,
     children: [
       {
         element: <AppShell />,

@@ -33,7 +33,7 @@ import { Timestamp } from './components/Timestamp'
 import { useAdminAnnouncements, useDeleteAnnouncement } from './hooks/useAdminAnnouncements'
 import { useInstitutionClock } from './lib/useInstitutionClock'
 import { useOneShotFlag } from './lib/urlState'
-import { currentTime } from './lib/zonedTime'
+import { currentTime } from '@/lib/zonedTime'
 
 function AnnouncementItem({
   announcement,

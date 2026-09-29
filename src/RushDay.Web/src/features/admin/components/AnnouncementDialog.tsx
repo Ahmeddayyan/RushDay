@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm, useWatch } from 'react-hook-form'
-import { z } from 'zod'
+import { z } from '@/lib/zod'
 
 import { describeProblem, isProblem, mapFieldErrors } from '@/api/problem'
 import type { AnnouncementRequest } from '@/api/types/admin'
@@ -24,9 +24,9 @@ import { useDirtyForm } from '@/lib/useDirtyForm'
 
 import { useSaveAnnouncement } from '../hooks/useAdminAnnouncements'
 import { ANNOUNCEMENT_BODY_MAX, ANNOUNCEMENT_TITLE_MAX } from '../lib/schemas'
-import { toApiInstant, toZonedInput, zonedInputToMs } from '../lib/zonedTime'
+import { toApiInstant, toZonedInput, zonedInputToMs } from '@/lib/zonedTime'
 
-import { ZonedDateTimeField } from './ZonedDateTimeField'
+import { ZonedDateTimeField } from '@/components/ui/ZonedDateTimeField'
 
 function announcementSchema(timeZone: string) {
   return z

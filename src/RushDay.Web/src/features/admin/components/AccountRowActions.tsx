@@ -104,7 +104,8 @@ export function AccountRowActions({
           : `Enabled ${account.username}. They can sign in again.`,
       )
     } catch (error) {
-      toast.error(describeProblem(error).message)
+      const number = account.studentNumber ?? account.staffNumber
+      toast.error(describeProblem(error, number ? { number } : {}).message)
     }
   }
 

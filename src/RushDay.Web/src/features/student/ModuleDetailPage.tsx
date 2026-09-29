@@ -284,6 +284,7 @@ export function Component() {
                   onWithdraw={() => withdrawal.mutate()}
                   completed={completed}
                   timeZone={timeZone}
+                  statusShown
                   size="lg"
                 />
               </>

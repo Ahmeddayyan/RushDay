@@ -9,8 +9,10 @@ interface ResultsDayRow {
   key: string
   label: string
   caption: string
-  before: string
-  after: string
+  detail?: string
+  /** Formatted figures; undefined when the run did not record it (before) or has not run (after). */
+  before: string | undefined
+  after: string | undefined
 }
 
 const NOT_RECORDED = 'not recorded for this run'
@@ -55,34 +57,35 @@ export function ResultsDayTiles() {
       key: 'peak',
       label: 'Peak load reached',
       caption: 'requests/s',
-      before: peakBefore === undefined ? NOT_RECORDED : `${formatNumber(peakBefore)}/s`,
-      after: peakAfter === undefined ? NOT_YET_MEASURED : `${formatNumber(peakAfter)}/s`,
+      before: peakBefore === undefined ? undefined : `${formatNumber(peakBefore)}/s`,
+      after: peakAfter === undefined ? undefined : `${formatNumber(peakAfter)}/s`,
     },
     {
       key: 'p95',
       label: 'Slowest 5% of requests',
       caption: 'p95 ms',
       before: `${formatDecimal(p95Before, 1)} ms`,
-      after: p95After === undefined ? NOT_YET_MEASURED : `${formatDecimal(p95After, 1)} ms`,
+      after: p95After === undefined ? undefined : `${formatDecimal(p95After, 1)} ms`,
     },
     {
       key: 'p99',
       label: 'Slowest 1 in 100',
       caption: 'p99 ms',
-      before: p99Before === undefined ? NOT_RECORDED : `${formatDecimal(p99Before, 1)} ms`,
-      after: p99After === undefined ? NOT_YET_MEASURED : `${formatDecimal(p99After, 1)} ms`,
+      before: p99Before === undefined ? undefined : `${formatDecimal(p99Before, 1)} ms`,
+      after: p99After === undefined ? undefined : `${formatDecimal(p99After, 1)} ms`,
     },
     {
       key: 'failed',
       label: 'Failed requests',
       caption: 'http_req_failed',
       before: `${formatDecimal(failedBefore, 2)}%`,
-      after: failedAfter === undefined ? NOT_YET_MEASURED : `${formatDecimal(failedAfter, 2)}%`,
+      after: failedAfter === undefined ? undefined : `${formatDecimal(failedAfter, 2)}%`,
     },
     {
       key: 'queries',
       label: 'Database round trips per page',
-      caption: 'dashboard.queriesPerRequest (from the code, not a load run)',
+      caption: 'dashboard.queriesPerRequest',
+      detail: 'From the code, not a load run.',
       before: '15',
       after: '5',
     },
@@ -90,8 +93,8 @@ export function ResultsDayTiles() {
 
   const columns: ChartTableColumn<ResultsDayRow>[] = [
     { key: 'label', header: 'Metric', render: (row) => row.label },
-    { key: 'before', header: 'Before (v0)', render: (row) => row.before },
-    { key: 'after', header: 'After (v1)', render: (row) => row.after },
+    { key: 'before', header: 'Before (v0)', render: (row) => row.before ?? NOT_RECORDED },
+    { key: 'after', header: 'After (v1)', render: (row) => row.after ?? NOT_YET_MEASURED },
   ]
 
   return (
@@ -104,12 +107,13 @@ export function ResultsDayTiles() {
         Boolean(value),
       )}
       chart={
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {rows.map((row) => (
             <BeforeAfterStat
               key={row.key}
               label={row.label}
               caption={row.caption}
+              {...(row.detail ? { detail: row.detail } : {})}
               before={row.before}
               after={row.after}
             />

@@ -30,7 +30,6 @@ import { useDocumentTitle } from '@/lib/useDocumentTitle'
 import { ModuleEditDialog } from './components/ModuleEditDialog'
 import { TableSkeleton } from './components/TableSkeleton'
 import { useAdminModules } from './hooks/useModules'
-import { useInstitutionClock } from './lib/useInstitutionClock'
 import { useUrlFilters } from './lib/urlState'
 
 const FILTERS = ['q', 'semester', 'inactive'] as const
@@ -69,7 +68,6 @@ function compare(a: AdminModule, b: AdminModule, key: SortKey): number {
  */
 export function Component() {
   useDocumentTitle('Modules · RushDay')
-  const { timeZone } = useInstitutionClock()
   const { values, update } = useUrlFilters(FILTERS)
   const includeInactive = values.inactive === '1'
   const query = useAdminModules(includeInactive)
@@ -130,7 +128,7 @@ export function Component() {
   } else {
     content = (
       <Refetching active={query.isPlaceholderData}>
-        <Table caption="Modules" captionHidden>
+        <Table caption="Modules" captionHidden density="compact">
           <TableHead>
             <TableRow>
               <TableHeaderCell sort={sortState('code')} onSort={() => toggleSort('code')}>
@@ -160,7 +158,7 @@ export function Component() {
                 onSort={() => toggleSort('enrolled')}
                 sortLabel="Enrolled this year"
               >
-                Enrolled this year
+                Enrolled<span className="sr-only"> this year</span>
               </TableHeaderCell>
               <TableHeaderCell>Leader</TableHeaderCell>
               <TableHeaderCell>Marks</TableHeaderCell>
@@ -181,7 +179,9 @@ export function Component() {
                     {module.code}
                   </Link>
                 </TableCell>
-                <TableCell label="Title">{module.title}</TableCell>
+                <TableCell label="Title" className="min-[1440px]:min-w-44">
+                  {module.title}
+                </TableCell>
                 <TableCell label="Semester">{formatSemester(module.semester)}</TableCell>
                 <TableCell label="Credits" numeric>
                   {module.credits}
@@ -205,17 +205,15 @@ export function Component() {
                 </TableCell>
                 <TableCell label="Leader">{leaderOf(module)}</TableCell>
                 <TableCell label="Marks">
-                  <MarksStatusChip
-                    status={module.marks.status}
-                    publishedAt={module.marks.publishedAt}
-                    timeZone={timeZone}
-                  />
+                  <MarksStatusChip status={module.marks.status} />
                 </TableCell>
                 <TableCell label="Active">
+                  {/* Running modules are the rule, so they get a quiet mark; an inactive one a badge. */}
                   {module.isActive ? (
-                    <Badge variant="success" icon={CircleCheck}>
-                      Active
-                    </Badge>
+                    <span className="inline-flex items-center gap-1 text-sm text-success">
+                      <CircleCheck aria-hidden="true" className="size-3.5" />
+                      Yes
+                    </span>
                   ) : (
                     <Badge variant="neutral" icon={CircleSlash}>
                       Inactive

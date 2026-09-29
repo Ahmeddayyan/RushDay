@@ -33,6 +33,11 @@ export interface EnrolButtonProps {
    */
   completed: CompletedModule | null | undefined
   timeZone: string
+  /**
+   * The page already states the enrolment status in words (the module page's "Your status"
+   * panel), so "Withdrawn {date}" under the button would say it twice.
+   */
+  statusShown?: boolean
   size?: 'md' | 'lg'
   className?: string
 }
@@ -58,6 +63,11 @@ function EnrolledTag({ size }: { size: 'md' | 'lg' }) {
 interface View {
   action: ReactNode
   caption: ReactNode
+  /**
+   * The caption repeats what the capacity meter beside the button (or the status panel) already
+   * shows: it stays the button's accessible description but is not printed a second time.
+   */
+  captionHidden?: boolean
   /** One sentence for the polite live region when something happens that the student did not see coming. */
   announce?: string
 }
@@ -77,6 +87,7 @@ export function EnrolButton({
   onWithdraw,
   completed,
   timeZone,
+  statusShown = false,
   size = 'md',
   className,
 }: EnrolButtonProps) {
@@ -223,9 +234,15 @@ export function EnrolButton({
           caption: row?.withdrawnAt
             ? `Withdrawn ${formatDate(row.withdrawnAt, timeZone)}`
             : placesLeft(module.placesRemaining),
+          captionHidden: statusShown || !row?.withdrawnAt,
         }
       case 'enrol':
-        return { action: primary('Enrol'), caption: placesLeft(module.placesRemaining) }
+        // Every EnrolButton sits under a CapacityMeter that prints "{n} of {capacity} places left".
+        return {
+          action: primary('Enrol'),
+          caption: placesLeft(module.placesRemaining),
+          captionHidden: true,
+        }
     }
   }
 
@@ -260,7 +277,7 @@ export function EnrolButton({
   return (
     <div className={cn('flex min-w-0 flex-col gap-2', className)}>
       <div className="flex flex-wrap items-center gap-2">{view.action}</div>
-      <p id={captionId} className="text-sm text-muted">
+      <p id={captionId} className={cn('text-sm text-muted', view.captionHidden && 'sr-only')}>
         {view.caption}
       </p>
       <p role="status" className="sr-only">

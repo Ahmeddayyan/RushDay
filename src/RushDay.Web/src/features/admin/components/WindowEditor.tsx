@@ -25,11 +25,11 @@ import {
   type WindowDraft,
   type WindowErrors,
 } from '../lib/windows'
-import { toZonedInput } from '../lib/zonedTime'
+import { toZonedInput } from '@/lib/zonedTime'
 
 import { ConfirmDialog } from './ConfirmDialog'
 import { WindowStateChip } from './StatusChips'
-import { ZonedDateTimeField } from './ZonedDateTimeField'
+import { ZonedDateTimeField } from '@/components/ui/ZonedDateTimeField'
 
 export interface WindowEditorProps {
   /** Null for a window being added. */

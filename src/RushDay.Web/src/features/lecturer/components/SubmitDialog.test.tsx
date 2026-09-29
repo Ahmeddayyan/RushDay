@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { makeLecturerMe } from '@/test/factories'
@@ -43,6 +43,28 @@ describe('SubmitDialog', () => {
     renderDialog({ total: 0 })
     expect(screen.getByRole('button', { name: 'Submit module' })).toBeDisabled()
     expect(screen.getByText('No students enrolled')).toBeInTheDocument()
+  })
+
+  it('asks for unsaved changes to be saved before submitting', async () => {
+    buildLecturerModule({
+      code: 'CS3001',
+      rowCount: 1,
+      rows: [
+        makeMarksRowFixture(0, { outcome: 'mark', mark: 70, gradeStatus: 'draft', version: 1 }),
+      ],
+    })
+    const { events } = renderDialog({ total: 1, unsaved: 2 })
+
+    await events.click(screen.getByRole('button', { name: 'Submit module' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(
+      await screen.findByText('You have 2 unsaved changes. Save your marks first, then submit.'),
+    ).toBeInTheDocument()
+    await waitFor(() =>
+      expect(
+        within(dialog).getAllByRole('button', { name: 'Submit module' }).at(-1),
+      ).toBeDisabled(),
+    )
   })
 
   it('lists missing students and disables submit until every mark is entered', async () => {
@@ -93,6 +115,10 @@ describe('SubmitDialog', () => {
     await events.click(confirm)
 
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1))
-    expect(onSubmitted.mock.calls[0]![0]).toMatchObject({ code: 'CS3001', status: 'submitted', gradeCount: 2 })
+    expect(onSubmitted.mock.calls[0]![0]).toMatchObject({
+      code: 'CS3001',
+      status: 'submitted',
+      gradeCount: 2,
+    })
   })
 })

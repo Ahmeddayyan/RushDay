@@ -60,7 +60,7 @@ import {
 import { useStudent } from './hooks/useStudents'
 import { describeMark } from './lib/marks'
 import { useInstitutionClock } from './lib/useInstitutionClock'
-import { currentTime } from './lib/zonedTime'
+import { currentTime } from '@/lib/zonedTime'
 
 const STUDENT_NUMBER = /^S\d{6}$/
 

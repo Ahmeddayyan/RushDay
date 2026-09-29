@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from '@/lib/zod'
 
 /** `/login` (05-frontend.md section 10): username trimmed 1..64, password 1..128. No case transform. */
 export const loginSchema = z.object({

@@ -10,12 +10,24 @@ import {
 
 import type { OpsSeriesPoint } from '@/api/types/ops'
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from '@/components/ui'
+import {
+  axisTickStyle,
+  chartTooltipStyle,
+  formatAxisNumber,
+} from '@/features/ops/charts/chartStyle'
 import { useChartPalette } from '@/features/ops/charts/palette'
 import { useReducedMotion } from '@/features/ops/useReducedMotion'
 import { formatNumber, formatTime } from '@/lib/format'
 
+import { sinceStart } from './seriesSinceStart'
+
 export interface RequestRateChartProps {
   series: OpsSeriesPoint[]
+  /** The server's start: minutes before it are not history, so they are not drawn as zeros. */
+  startedAt?: string
+  /** When the sample was taken: the minute still in progress is left out until it is complete. */
+  sampledAt?: string
+  timeZone?: string
 }
 
 /**
@@ -23,10 +35,16 @@ export interface RequestRateChartProps {
  * wash, no legend (one series). A `<details>` table twin gives the non-visual equivalent
  * (05-frontend.md section 12).
  */
-export function RequestRateChart({ series }: RequestRateChartProps) {
+export function RequestRateChart({
+  series,
+  startedAt,
+  sampledAt,
+  timeZone,
+}: RequestRateChartProps) {
   const palette = useChartPalette()
   const reducedMotion = useReducedMotion()
-  const hasData = series.some((point) => point.requests > 0)
+  const points = sinceStart(series, startedAt, sampledAt)
+  const hasData = points.some((point) => point.requests > 0)
 
   if (!hasData) {
     return (
@@ -34,17 +52,32 @@ export function RequestRateChart({ series }: RequestRateChartProps) {
     )
   }
 
-  const data = series.map((point) => ({ ...point, label: formatTime(point.minute) }))
+  const data = points.map((point) => ({ ...point, label: formatTime(point.minute, timeZone) }))
 
   return (
-    <div>
+    <div className="space-y-3">
       <div style={{ width: '100%', height: 220 }}>
         <ResponsiveContainer>
-          <AreaChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-            <CartesianGrid stroke={palette.grid} />
-            <XAxis dataKey="label" stroke={palette.muted} fontSize={12} minTickGap={24} />
-            <YAxis stroke={palette.muted} fontSize={12} />
+          <AreaChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke={palette.grid} vertical={false} />
+            <XAxis
+              dataKey="label"
+              tick={axisTickStyle}
+              tickLine={false}
+              stroke={palette.grid}
+              minTickGap={24}
+            />
+            <YAxis
+              width={44}
+              tick={axisTickStyle}
+              tickLine={false}
+              axisLine={false}
+              tickFormatter={formatAxisNumber}
+              allowDecimals={false}
+            />
             <Tooltip
+              {...chartTooltipStyle}
+              cursor={{ stroke: 'var(--border-strong)' }}
               labelFormatter={(label) => (typeof label === 'string' ? label : '')}
               formatter={(value) => `${formatNumber(Number(value))} requests`}
             />
@@ -61,7 +94,7 @@ export function RequestRateChart({ series }: RequestRateChartProps) {
           </AreaChart>
         </ResponsiveContainer>
       </div>
-      <details className="mt-2">
+      <details>
         <summary className="cursor-pointer text-sm text-muted">View as table</summary>
         <Table caption="Requests per minute, last 60 minutes" captionHidden className="mt-2">
           <TableHead>
@@ -71,9 +104,9 @@ export function RequestRateChart({ series }: RequestRateChartProps) {
             </TableRow>
           </TableHead>
           <TableBody>
-            {series.map((point) => (
+            {points.map((point) => (
               <TableRow key={point.minute}>
-                <TableCell label="Minute">{formatTime(point.minute)}</TableCell>
+                <TableCell label="Minute">{formatTime(point.minute, timeZone)}</TableCell>
                 <TableCell numeric label="Requests">
                   {formatNumber(point.requests)}
                 </TableCell>

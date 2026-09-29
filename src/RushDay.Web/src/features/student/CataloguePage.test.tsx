@@ -273,6 +273,8 @@ describe('CataloguePage enrol states', () => {
     const enrol = within(item).getByRole('button', { name: 'Enrol on CS3099' })
     expect(enrol).toBeEnabled()
     expect(enrol).toHaveAccessibleDescription('12 places left')
+    // Printed once, by the meter; the button's caption stays its description but is visually hidden.
+    expect(within(item).getByText('12 places left')).toHaveClass('sr-only')
     expect(within(item).getByRole('meter')).toHaveAttribute(
       'aria-valuetext',
       '12 of 30 places left',

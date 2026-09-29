@@ -88,8 +88,26 @@ export function DetailsList({
   )
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The subject as a person reads it. A readable id (a student number, a module code) is shown as it
+ * is; a database UUID is replaced by the name the event's details carry (an account's username, an
+ * announcement's title) or else shortened to its first eight characters. The full id stays in the
+ * expanded details, so nothing is lost for an investigation.
+ */
 function subjectText(event: AuditEventView): string {
-  return event.subjectId ? `${event.subjectType} ${event.subjectId}` : event.subjectType
+  const id = event.subjectId
+  if (!id) return event.subjectType
+  if (!UUID.test(id)) return `${event.subjectType} ${id}`
+  const details = event.details ?? {}
+  const name =
+    typeof details.username === 'string'
+      ? details.username
+      : typeof details.title === 'string'
+        ? `“${details.title}”`
+        : null
+  return name ? `${event.subjectType} ${name}` : `${event.subjectType} ${id.slice(0, 8)}…`
 }
 
 /**
@@ -131,7 +149,7 @@ export function AuditRow({
             <span className="font-mono text-xs text-subtle">{event.action}</span>
           </span>
         </TableCell>
-        <TableCell label="Subject" className="max-w-56 break-all text-muted">
+        <TableCell label="Subject" className="max-w-56 break-words text-muted">
           {subjectText(event)}
         </TableCell>
         <TableCell label="Student" className="font-mono">
@@ -181,6 +199,11 @@ export function AuditRow({
               ) : (
                 <p className="text-sm text-muted">No details recorded.</p>
               )}
+              {event.subjectId && UUID.test(event.subjectId) && (
+                <p className="text-xs text-muted">
+                  {event.subjectType} <span className="font-mono">{event.subjectId}</span>
+                </p>
+              )}
               {event.requestId && (
                 <p className="text-xs text-muted">
                   Request <span className="font-mono">{event.requestId}</span>
@@ -207,7 +230,7 @@ export function AuditTable({
   captionHidden?: boolean
 }) {
   return (
-    <Table caption={caption} captionHidden={captionHidden} mode="x">
+    <Table caption={caption} captionHidden={captionHidden} mode="x" density="compact">
       <TableHead>
         <TableRow>
           <TableHeaderCell>Time</TableHeaderCell>

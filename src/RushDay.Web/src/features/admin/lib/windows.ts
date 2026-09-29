@@ -1,4 +1,4 @@
-import { DAY_MS, toApiInstant, zonedInputToMs } from './zonedTime'
+import { DAY_MS, toApiInstant, zonedInputToMs } from '@/lib/zonedTime'
 
 /** The three instants of a window as `datetime-local` text in the institution's zone. */
 export interface WindowDraft {

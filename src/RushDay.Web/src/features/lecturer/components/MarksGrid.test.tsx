@@ -20,17 +20,18 @@ afterEach(() => {
 })
 
 /** Mirrors how `MarksTab` drives the grid: `page`/`q` live in the parent, `MarksGrid` is controlled. */
-function Harness({
-  code,
-  status = 'draft',
-}: {
-  code: string
-  status?: MarksStatusValue
-}) {
+function Harness({ code, status = 'draft' }: { code: string; status?: MarksStatusValue }) {
   const [page, setPage] = useState(1)
   const [q, setQ] = useState('')
   return (
-    <MarksGrid code={code} status={status} page={page} q={q} onPageChange={setPage} onQueryChange={setQ} />
+    <MarksGrid
+      code={code}
+      status={status}
+      page={page}
+      q={q}
+      onPageChange={setPage}
+      onQueryChange={setQ}
+    />
   )
 }
 
@@ -116,15 +117,13 @@ describe('MarksGrid', () => {
     })
     renderGrid('CS3001', 'submitted')
 
-    expect(
-      await screen.findByText("Marks for this module are locked and can't be edited here."),
-    ).toBeInTheDocument()
+    // The banner saying why is MarksTab's (MarksTab.test.tsx); the grid locks every control.
     expect(await screen.findByLabelText('Mark for Student 1')).toBeDisabled()
     expect(screen.getByLabelText('Outcome for Student 1')).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Save marks' })).toBeDisabled()
   })
 
-  it('keeps a stale-mark row dirty and highlighted after a rejected save', async () => {
+  it('keeps a stale-mark row dirty and highlighted after a rejected save, and saves it on the next Save', async () => {
     const fixture = buildLecturerModule({ code: 'CS3001', rowCount: 2 })
     const { events } = renderGrid('CS3001')
 
@@ -140,13 +139,19 @@ describe('MarksGrid', () => {
     await events.type(input, '77')
     await events.click(screen.getByRole('button', { name: 'Save marks' }))
 
-    expect(
-      await screen.findByText('Someone else changed this mark. Review the highlighted row and save again.'),
-    ).toBeInTheDocument()
+    // The stored value is shown next to the lecturer's own, which stays in the input.
+    expect(await screen.findByText(/^Changed to 55 .*while you were editing/)).toBeInTheDocument()
     expect(screen.getByText('1 unsaved')).toBeInTheDocument()
+    expect(input).toHaveValue('77')
     const row = input.closest('tr')!
     expect(row).toHaveAttribute('data-stale', 'true')
     expect(row).toHaveAttribute('data-dirty', 'true')
+
+    // "Review the highlighted rows and save again": the second Save sends the fresh version.
+    await events.click(screen.getByRole('button', { name: 'Save marks' }))
+    await waitFor(() => expect(screen.getByText('All changes saved')).toBeInTheDocument())
+    expect(row).not.toHaveAttribute('data-stale')
+    expect(fixture.rows[0]!.mark).toBe(77)
   })
 
   it('restores a sessionStorage mirror after a remount', async () => {
@@ -178,7 +183,7 @@ describe('MarksGrid', () => {
       inputs[0]!.focus()
       const text = inputs.map((_, index) => 50 + (index % 40)).join('\n')
       fireEvent.paste(inputs[0]!, { clipboardData: { getData: () => text } })
-      await waitFor(() => expect(inputs[inputs.length - 1]).toHaveValue(String(50 + ((99) % 40))))
+      await waitFor(() => expect(inputs[inputs.length - 1]).toHaveValue(String(50 + (99 % 40))))
     }
 
     for (let page = 0; page < 6; page += 1) {

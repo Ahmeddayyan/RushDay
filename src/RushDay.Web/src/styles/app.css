@@ -195,6 +195,19 @@
     font-family: var(--font-sans);
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
+    /*
+     * The sticky top bar (64 px) and, below 768 px, the students' bottom tabs must never cover the
+     * control that has keyboard focus (WCAG 2.4.11): moving focus through the marks grid with Enter
+     * or the arrow keys scrolls the next input into view with this much room left around it.
+     */
+    scroll-padding-top: 5rem;
+    scroll-padding-bottom: 1rem;
+  }
+
+  @media (width < 48rem) {
+    html {
+      scroll-padding-bottom: 5rem;
+    }
   }
 
   body {

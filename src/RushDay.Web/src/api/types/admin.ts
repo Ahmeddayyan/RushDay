@@ -2,6 +2,7 @@ import type {
   AccountView,
   AuditEventView,
   GradeOutcome,
+  GradeResult,
   MarksStatus,
   MarksStatusValue,
   ModuleSummary,
@@ -314,11 +315,15 @@ export interface AdminStudentView {
   recentAudit: AuditEventView[]
 }
 
-/** `GET /api/admin/students/{studentNumber}/export.json`: `AdminStudentView` minus the audit and account. */
+/**
+ * `GET /api/admin/students/{studentNumber}/export.json`, the same `StudentExport` as `GET /api/me/export.json`:
+ * the record, every enrolment, and only the grades the student can see, as `GradeResult` rows (no `status`,
+ * `version` or `visibleToStudent`, which describe states the student never sees).
+ */
 export interface AdminStudentExport {
   student: AdminStudentRecord
   enrolments: AdminStudentEnrolment[]
-  grades: AdminStudentGrade[]
+  grades: GradeResult[]
   weightedAverage: number | null
   classification: string | null
   exportedAt: string

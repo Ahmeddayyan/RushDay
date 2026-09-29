@@ -81,7 +81,7 @@ function LinkedNumber({ account }: { account: AccountView }) {
 
 function AccountsTable({ accounts, timeZone }: { accounts: AccountView[]; timeZone: string }) {
   return (
-    <Table caption="Accounts" captionHidden mode="x">
+    <Table caption="Accounts" captionHidden mode="x" density="compact">
       <TableHead>
         <TableRow>
           <TableHeaderCell>Username</TableHeaderCell>

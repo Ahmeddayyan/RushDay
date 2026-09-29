@@ -32,8 +32,8 @@ afterEach(() => {
 })
 
 describe('the ProblemDetails catalogue', () => {
-  it('holds exactly the 62 slugs of 02-api.md section 6', () => {
-    expect(Object.keys(PROBLEM_CATALOGUE)).toHaveLength(62)
+  it('holds exactly the 63 slugs of 02-api.md section 6', () => {
+    expect(Object.keys(PROBLEM_CATALOGUE)).toHaveLength(63)
   })
 
   it('has a copy row for every slug', () => {
@@ -124,6 +124,39 @@ describe('describeProblem copy', () => {
     )
     expect(describeProblem(apiError('module-locked', 409), { audience: 'admin' }).message).toBe(
       'Students can already see these marks. Unpublish the semester or correct single marks.',
+    )
+  })
+
+  it('words module-locked on an enrolment for the student and for the registry (S6 review E1)', () => {
+    expect(
+      describeProblem(apiError('module-locked', 409), {
+        code: 'CS3001',
+        enrolment: true,
+        support: null,
+      }).message,
+    ).toBe(
+      "Marks for CS3001 have already been submitted this year, so you can't join it now. Contact the academic office.",
+    )
+    expect(
+      describeProblem(apiError('module-locked', 409), {
+        code: 'CS3001',
+        audience: 'admin',
+        enrolment: true,
+      }).message,
+    ).toBe(
+      'Marks for CS3001 are already submitted this year. Return the module to draft before enrolling anyone.',
+    )
+  })
+
+  it('words principal-left and the any-year semester guard (S6 review)', () => {
+    expect(describeProblem(apiError('principal-left', 409), { number: 'S000123' }).message).toBe(
+      "S000123 has left, so they can't have an account.",
+    )
+    expect(
+      describeProblem(apiError('semester-change-with-enrolments', 422, { enrolledCount: 412 }))
+        .message,
+    ).toBe(
+      "The semester can't change once students have enrolled (412 enrolments in all years). Create a new module instead.",
     )
   })
 

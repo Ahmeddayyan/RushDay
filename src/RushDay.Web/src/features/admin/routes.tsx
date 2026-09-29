@@ -1,7 +1,7 @@
 import type { RouteObject } from 'react-router'
 
 import { ErrorBoundary } from '@/app/ErrorBoundary'
-import { RequireRole } from '@/app/guards'
+import { BootSplash, RequireRole } from '@/app/guards'
 import { AppShell } from '@/components/layout/AppShell'
 
 /**
@@ -14,6 +14,7 @@ export const adminRoutes: RouteObject[] = [
   {
     element: <RequireRole roles={['Admin']} />,
     errorElement: <ErrorBoundary />,
+    hydrateFallbackElement: <BootSplash />,
     children: [
       {
         element: <AppShell wide />,

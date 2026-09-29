@@ -20,9 +20,9 @@ import {
   toApiInstant,
   toZonedInput,
   zonedInputToMs,
-} from '../lib/zonedTime'
+} from '@/lib/zonedTime'
 
-import { ZonedDateTimeField } from './ZonedDateTimeField'
+import { ZonedDateTimeField } from '@/components/ui/ZonedDateTimeField'
 
 function RescheduleForm({
   publication,

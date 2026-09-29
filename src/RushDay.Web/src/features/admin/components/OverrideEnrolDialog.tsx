@@ -78,7 +78,11 @@ function OverrideEnrolForm({
       )
       onDone()
     } catch (error) {
-      const message = describeProblem(error, { code: module.code }).message
+      const message = describeProblem(error, {
+        code: module.code,
+        audience: 'admin',
+        enrolment: true,
+      }).message
       setFormError(
         isProblem(error, 'module-full')
           ? `${message} Tick "Raise capacity by one if full" to enrol them anyway.`

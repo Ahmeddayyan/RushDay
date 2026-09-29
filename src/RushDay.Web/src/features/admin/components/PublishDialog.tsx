@@ -24,9 +24,9 @@ import {
   toApiInstant,
   toZonedInput,
   zonedInputToMs,
-} from '../lib/zonedTime'
+} from '@/lib/zonedTime'
 
-import { ZonedDateTimeField } from './ZonedDateTimeField'
+import { ZonedDateTimeField } from '@/components/ui/ZonedDateTimeField'
 
 export interface PublishDialogProps {
   open: boolean
@@ -203,6 +203,7 @@ export function PublishDialog({ open, onOpenChange, ...formProps }: PublishDialo
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent
+        size="wide"
         title={`Publish ${formatSemester(formProps.semester)} ${formProps.academicYear} results`}
         description="Only modules whose leader has submitted every mark are published. Partly entered marks are never published."
       >

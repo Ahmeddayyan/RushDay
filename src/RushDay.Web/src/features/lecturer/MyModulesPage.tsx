@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router'
 
 import { usePublicStatus } from '@/api/endpoints/public'
 import type { LecturerModuleSummary } from '@/api/types/lecturer'
 import {
-  ButtonLink,
   Card,
   EmptyState,
   ErrorState,
@@ -23,6 +23,13 @@ import { formatSemester } from '@/lib/format'
 import { useDocumentTitle } from '@/lib/useDocumentTitle'
 
 import { useMyModules } from './hooks/useMyModules'
+
+/** The module's three tabs, as compact links that stay on one line in the table. */
+const MODULE_LINKS = [
+  { label: 'Roster', path: '' },
+  { label: 'Marks', path: '/marks' },
+  { label: 'Announcements', path: '/announcements' },
+] as const
 
 type SortKey = 'code' | 'title' | 'semester'
 
@@ -75,16 +82,11 @@ export function Component() {
   } else if (modulesQuery.isError) {
     content = <ErrorState error={modulesQuery.error} onRetry={() => void modulesQuery.refetch()} />
   } else if (sorted.length === 0) {
-    content = (
-      <EmptyState
-        title="No modules are assigned to you. Ask an administrator."
-        compact
-      />
-    )
+    content = <EmptyState title="No modules are assigned to you. Ask an administrator." compact />
   } else {
     content = (
       <Refetching active={modulesQuery.isFetching}>
-        <Table caption="Your modules">
+        <Table caption="Your modules" density="compact">
           <TableHead>
             <TableRow>
               <TableHeaderCell sort={sortStateFor('code')} onSort={() => toggleSort('code')}>
@@ -93,7 +95,10 @@ export function Component() {
               <TableHeaderCell sort={sortStateFor('title')} onSort={() => toggleSort('title')}>
                 Title
               </TableHeaderCell>
-              <TableHeaderCell sort={sortStateFor('semester')} onSort={() => toggleSort('semester')}>
+              <TableHeaderCell
+                sort={sortStateFor('semester')}
+                onSort={() => toggleSort('semester')}
+              >
                 Semester
               </TableHeaderCell>
               <TableHeaderCell numeric>Enrolled</TableHeaderCell>
@@ -128,20 +133,17 @@ export function Component() {
                   {module.myRole}
                 </TableCell>
                 <TableCell label="Actions">
-                  <div className="flex flex-wrap gap-x-3 gap-y-1">
-                    <ButtonLink to={`/lecturer/modules/${module.code}`} variant="ghost" size="sm">
-                      Roster
-                    </ButtonLink>
-                    <ButtonLink to={`/lecturer/modules/${module.code}/marks`} variant="ghost" size="sm">
-                      Marks
-                    </ButtonLink>
-                    <ButtonLink
-                      to={`/lecturer/modules/${module.code}/announcements`}
-                      variant="ghost"
-                      size="sm"
-                    >
-                      Announcements
-                    </ButtonLink>
+                  <div className="flex flex-wrap items-center gap-x-1 gap-y-1 whitespace-nowrap">
+                    {MODULE_LINKS.map((link) => (
+                      <Link
+                        key={link.label}
+                        to={`/lecturer/modules/${module.code}${link.path}`}
+                        className="rounded-md px-2 py-1 text-sm font-medium text-primary hover:bg-primary-soft"
+                      >
+                        {link.label}
+                        <span className="sr-only"> for {module.code}</span>
+                      </Link>
+                    ))}
                   </div>
                 </TableCell>
               </TableRow>
@@ -154,7 +156,10 @@ export function Component() {
 
   return (
     <div>
-      <PageHeader title="My modules" description="Every module you're assigned to teach this year." />
+      <PageHeader
+        title="My modules"
+        description="Every module you're assigned to teach this year."
+      />
       <Card flush>{content}</Card>
     </div>
   )

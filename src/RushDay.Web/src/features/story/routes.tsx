@@ -1,6 +1,7 @@
 import type { RouteObject } from 'react-router'
 
 import { ErrorBoundary } from '@/app/ErrorBoundary'
+import { BootSplash } from '@/app/guards'
 import { AppShell } from '@/components/layout/AppShell'
 
 /**
@@ -14,6 +15,7 @@ export const storyRoutes: RouteObject[] = [
   {
     element: <AppShell />,
     errorElement: <ErrorBoundary />,
+    hydrateFallbackElement: <BootSplash />,
     children: [{ path: '/story', lazy: () => import('./StoryPage') }],
   },
 ]

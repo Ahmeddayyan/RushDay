@@ -42,13 +42,18 @@ export interface ProblemContext {
   academicYear?: string
   /** `module-locked` reads differently for a lecturer and for the registry. */
   audience?: 'lecturer' | 'admin'
+  /**
+   * The request was an enrolment (the student's own, or an administrator's override): there
+   * `module-locked` means the module's marks for this year are already submitted (S6 review E1).
+   */
+  enrolment?: boolean
   /** `student-left` about the signed-in student's own record. */
   ownSession?: boolean
   support?: SupportInfo | null
   timeZone?: string
 }
 
-/** The closed slug catalogue of 02-api.md section 6 with each slug's status (62 slugs). */
+/** The closed slug catalogue of 02-api.md section 6 with each slug's status (63 slugs). */
 export const PROBLEM_CATALOGUE = {
   validation: 400,
   antiforgery: 400,
@@ -90,6 +95,7 @@ export const PROBLEM_CATALOGUE = {
   'publication-scheduled': 409,
   'username-taken': 409,
   'principal-has-account': 409,
+  'principal-left': 409,
   'module-code-taken': 409,
   'student-number-taken': 409,
   'staff-number-taken': 409,
@@ -306,8 +312,11 @@ export const PROBLEM_COPY: Record<ProblemSlug, Row> = {
       : "This student has left, so they can't be enrolled.",
   }),
   'module-locked': (p) => ({
-    message:
-      p.ctx.audience === 'admin'
+    message: p.ctx.enrolment
+      ? p.ctx.audience === 'admin'
+        ? `Marks for ${codeOr(p, 'this module')} are already submitted this year. Return the module to draft before enrolling anyone.`
+        : `Marks for ${codeOr(p, 'this module')} have already been submitted this year, so you can't join it now. ${capitalise(p.support)}.`
+      : p.ctx.audience === 'admin'
         ? 'Students can already see these marks. Unpublish the semester or correct single marks.'
         : "Marks for this module are submitted and can't be changed. Ask the academic office to return it to draft.",
   }),
@@ -344,6 +353,9 @@ export const PROBLEM_COPY: Record<ProblemSlug, Row> = {
   'username-taken': () => ({ message: 'That username is already in use.' }),
   'principal-has-account': (p) => ({
     message: `${p.ctx.number ?? p.ctx.value ?? 'This person'} already has an account.`,
+  }),
+  'principal-left': (p) => ({
+    message: `${p.ctx.number ?? p.ctx.value ?? 'This person'} has left, so they can't have an account.`,
   }),
   'module-code-taken': (p) => ({ message: `${p.ctx.value ?? 'That module code'} already exists.` }),
   'student-number-taken': (p) => ({
@@ -386,7 +398,7 @@ export const PROBLEM_COPY: Record<ProblemSlug, Row> = {
     message: `Capacity can't go below the ${num(p.ext.enrolledCount) ?? 'number of'} students already enrolled.`,
   }),
   'semester-change-with-enrolments': (p) => ({
-    message: `The semester can't change while ${num(p.ext.enrolledCount) ?? 'some'} students are enrolled.`,
+    message: `The semester can't change once students have enrolled (${num(p.ext.enrolledCount) ?? 'some'} enrolments in all years). Create a new module instead.`,
   }),
   'publish-too-far-ahead': () => ({ message: 'Choose a date within the next 90 days.' }),
   'invalid-lecturer-assignment': () => ({

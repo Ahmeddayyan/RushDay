@@ -108,16 +108,21 @@ export function ResultsTable({ group, timeZone }: ResultsTableProps) {
         )}
       </div>
 
+      {/* Fixed column widths, so the columns of every semester's table line up down the page. */}
       {group.state === 'published' ? (
-        <Table caption={label} captionHidden>
+        <Table caption={label} captionHidden className="sm:table-fixed">
           <TableHead>
             <TableRow>
-              <TableHeaderCell>Code</TableHeaderCell>
+              <TableHeaderCell className="sm:w-28">Code</TableHeaderCell>
               <TableHeaderCell>Module</TableHeaderCell>
-              <TableHeaderCell numeric>Credits</TableHeaderCell>
-              <TableHeaderCell numeric>Mark</TableHeaderCell>
-              <TableHeaderCell>Band</TableHeaderCell>
-              <TableHeaderCell>Published</TableHeaderCell>
+              <TableHeaderCell numeric className="sm:w-24">
+                Credits
+              </TableHeaderCell>
+              <TableHeaderCell numeric className="sm:w-24">
+                Mark
+              </TableHeaderCell>
+              <TableHeaderCell className="sm:w-32">Band</TableHeaderCell>
+              <TableHeaderCell className="sm:w-72">Published</TableHeaderCell>
             </TableRow>
           </TableHead>
           <TableBody>

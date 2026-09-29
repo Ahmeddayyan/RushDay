@@ -23,6 +23,8 @@ export interface SubmitDialogProps {
   myRole: 'leader' | 'teacher' | null
   leader: string | null
   total: number
+  /** Changes in the grid not saved yet: submitting would leave them behind, so it waits for Save. */
+  unsaved?: number
   onSubmitted: (response: SubmitMarksResponse) => void
 }
 
@@ -31,7 +33,14 @@ export interface SubmitDialogProps {
  * (05-frontend.md section 10): confirms the count, lists any students still missing a mark and
  * disables submission until every active enrolment has an outcome. A teacher sees only the caption.
  */
-export function SubmitDialog({ code, myRole, leader, total, onSubmitted }: SubmitDialogProps) {
+export function SubmitDialog({
+  code,
+  myRole,
+  leader,
+  total,
+  unsaved = 0,
+  onSubmitted,
+}: SubmitDialogProps) {
   const [open, setOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const missingQuery = useMissingStudents(code, open)
@@ -42,7 +51,7 @@ export function SubmitDialog({ code, myRole, leader, total, onSubmitted }: Submi
   }
 
   const missing = missingQuery.data ?? []
-  const canSubmit = total > 0 && missingQuery.isSuccess && missing.length === 0
+  const canSubmit = total > 0 && unsaved === 0 && missingQuery.isSuccess && missing.length === 0
 
   async function confirmSubmit() {
     setError(null)
@@ -75,6 +84,15 @@ export function SubmitDialog({ code, myRole, leader, total, onSubmitted }: Submi
         title={`Submit ${total} ${total === 1 ? 'mark' : 'marks'} for ${code}?`}
         description="Marks are locked for editing and go to the academic office for publication."
       >
+        {unsaved > 0 && (
+          <p
+            role="alert"
+            className="rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning"
+          >
+            You have {unsaved} unsaved {unsaved === 1 ? 'change' : 'changes'}. Save your marks
+            first, then submit.
+          </p>
+        )}
         {missingQuery.isPending ? (
           <Skeleton className="h-16 w-full" />
         ) : missing.length > 0 ? (

@@ -19,19 +19,25 @@ import { cn } from '@/lib/cn'
  * by its column name from `label` (`data-label`); explicit ARIA table roles keep the semantics that
  * `display: block` would otherwise strip in some browsers. `scroll="x"` opts a wide table (audit,
  * accounts) into horizontal scrolling instead, with a fade on the edge that still has content.
+ * Every scroller is `relative`: visually hidden text in a cell is `position: absolute`, and without a
+ * positioned scroller it escapes the scroll clip and widens the whole page on a phone.
+ * Cells are vertically centred, so text lines up with the buttons and chips in the same row.
  */
 
 interface TableContextValue {
   stacked: boolean
+  compact: boolean
 }
 
-const TableContext = createContext<TableContextValue>({ stacked: false })
+const TableContext = createContext<TableContextValue>({ stacked: false, compact: false })
 
 export interface TableProps extends Omit<ComponentProps<'table'>, 'children'> {
   caption: ReactNode
   captionHidden?: boolean
   /** 'stack' (default): cards below 640 px. 'x': keep columns and scroll sideways. */
   mode?: 'stack' | 'x'
+  /** 'compact': 12 px instead of 16 px of padding either side of a cell, for tables of many columns. */
+  density?: 'default' | 'compact'
   children: ReactNode
   wrapperClassName?: string
 }
@@ -54,6 +60,8 @@ function useScrollFade() {
     node.addEventListener('scroll', measure, { passive: true })
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
     observer?.observe(node)
+    // The scroller keeps its size when rows arrive; the table inside it is what grows wider.
+    if (node.firstElementChild) observer?.observe(node.firstElementChild)
     return () => {
       node.removeEventListener('scroll', measure)
       observer?.disconnect()
@@ -67,12 +75,14 @@ export function Table({
   caption,
   captionHidden = false,
   mode = 'stack',
+  density = 'default',
   className,
   wrapperClassName,
   children,
   ...props
 }: TableProps) {
   const stacked = mode === 'stack'
+  const compact = density === 'compact'
   const captionId = useId()
   const { ref, fade } = useScrollFade()
 
@@ -100,7 +110,7 @@ export function Table({
   )
 
   return (
-    <TableContext value={{ stacked }}>
+    <TableContext value={{ stacked, compact }}>
       <div
         className={cn(
           'relative w-full rounded-lg border border-border bg-surface',
@@ -109,7 +119,7 @@ export function Table({
         )}
       >
         {stacked ? (
-          <div className="w-full sm:overflow-x-auto">{table}</div>
+          <div className="relative w-full sm:overflow-x-auto">{table}</div>
         ) : (
           <>
             <div
@@ -117,21 +127,21 @@ export function Table({
               role="region"
               aria-labelledby={captionId}
               tabIndex={0}
-              className="w-full overflow-x-auto rounded-lg focus-visible:outline-offset-[-2px]"
+              className="relative w-full overflow-x-auto rounded-lg focus-visible:outline-offset-[-2px]"
             >
               {table}
             </div>
             <div
               aria-hidden="true"
               className={cn(
-                'pointer-events-none absolute inset-y-0 left-0 w-8 rounded-l-lg bg-linear-to-r from-surface to-transparent transition-opacity',
+                'pointer-events-none absolute inset-y-0 left-0 w-12 rounded-l-lg bg-linear-to-r from-surface to-transparent transition-opacity',
                 fade.start ? 'opacity-100' : 'opacity-0',
               )}
             />
             <div
               aria-hidden="true"
               className={cn(
-                'pointer-events-none absolute inset-y-0 right-0 w-8 rounded-r-lg bg-linear-to-l from-surface to-transparent transition-opacity',
+                'pointer-events-none absolute inset-y-0 right-0 w-12 rounded-r-lg bg-linear-to-l from-surface to-transparent transition-opacity',
                 fade.end ? 'opacity-100' : 'opacity-0',
               )}
             />
@@ -211,7 +221,7 @@ export function TableHeaderCell({
   children,
   ...props
 }: TableHeaderCellProps) {
-  const { stacked } = useContext(TableContext)
+  const { stacked, compact } = useContext(TableContext)
   const sortable = sort !== undefined && onSort !== undefined
   const name = sortLabel ?? (typeof children === 'string' ? children : 'this column')
   const SortIcon = sort === 'ascending' ? ArrowUp : sort === 'descending' ? ArrowDown : ArrowUpDown
@@ -222,7 +232,8 @@ export function TableHeaderCell({
       role={stacked ? (scope === 'row' ? 'rowheader' : 'columnheader') : undefined}
       aria-sort={sortable ? sort : undefined}
       className={cn(
-        'border-b border-border px-4 py-2.5 text-xs font-semibold tracking-wide whitespace-nowrap text-muted uppercase',
+        'border-b border-border py-2.5 text-xs font-semibold tracking-wide whitespace-nowrap text-muted uppercase',
+        compact ? 'px-3' : 'px-4',
         numeric && 'text-right',
         className,
       )}
@@ -259,19 +270,20 @@ export interface TableCellProps extends ComponentProps<'td'> {
 }
 
 export function TableCell({ className, numeric = false, label, ...props }: TableCellProps) {
-  const { stacked } = useContext(TableContext)
+  const { stacked, compact } = useContext(TableContext)
   return (
     <td
       role={stacked ? 'cell' : undefined}
       data-label={label}
       className={cn(
-        'px-4 py-3 align-top text-text',
+        'py-3 align-middle text-text',
+        compact ? 'px-3' : 'px-4',
         numeric && 'text-right tabular-nums whitespace-nowrap',
         stacked &&
           'max-sm:flex max-sm:items-baseline max-sm:justify-between max-sm:gap-4 max-sm:px-0 max-sm:py-1.5 max-sm:text-right',
         stacked &&
           label &&
-          'max-sm:before:shrink-0 max-sm:before:text-left max-sm:before:font-medium max-sm:before:text-muted max-sm:before:content-[attr(data-label)]',
+          'max-sm:before:shrink-0 max-sm:before:text-left max-sm:before:font-sans max-sm:before:font-medium max-sm:before:text-muted max-sm:before:content-[attr(data-label)]',
         className,
       )}
       {...props}

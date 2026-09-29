@@ -14,7 +14,9 @@ describe('EnrolmentRushChart', () => {
 
     expect(await screen.findByText('The enrolment rush')).toBeInTheDocument()
     expect(
-      await screen.findByText(/Places given out beyond capacity: 124 → not yet measured/),
+      await screen.findByText(
+        'Places given out beyond capacity: 124 before, not yet measured after.',
+      ),
     ).toBeInTheDocument()
 
     await events.click(await screen.findByRole('tab', { name: 'Table' }))
@@ -51,7 +53,22 @@ describe('EnrolmentRushChart', () => {
       handlers: [loadResultsHandler(makeLoadResults({ runs: [makeLoadRun(), after] }))],
     })
 
-    expect(await screen.findByText('Places given out beyond capacity: 124 → 0')).toBeInTheDocument()
+    expect(
+      await screen.findByText('Places given out beyond capacity: 124 before, 0 after.'),
+    ).toBeInTheDocument()
+  })
+
+  it('lists the legend in the order the bar segments are stacked', async () => {
+    const { container } = renderWithProviders(<EnrolmentRushChart />, {
+      handlers: [loadResultsHandler(makeLoadResults())],
+    })
+    await screen.findByText('Places given out beyond capacity: 124 before, not yet measured after.')
+    const legend = container.querySelector('ul[aria-hidden="true"]')
+    expect(legend).not.toBeNull()
+    const labels = Array.from((legend as HTMLElement).querySelectorAll('li')).map(
+      (item) => item.textContent,
+    )
+    expect(labels).toEqual(['Got a place', 'Told it was full', 'Turned away while busy', 'Failed'])
   })
 
   it('shows an empty state when no enrolment-rush run has been recorded', async () => {

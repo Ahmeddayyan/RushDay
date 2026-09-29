@@ -85,7 +85,7 @@ describe('ResultsAdminPage', () => {
     })
     expect(within(table).getByText('Ready to publish')).toBeInTheDocument()
     expect(
-      within(table).getByText(/Submitted, 2 marks missing \(students added after submission\):/),
+      within(table).getByText(/Submitted, 2 marks missing \(a student without a submitted mark\):/),
     ).toBeInTheDocument()
     expect(within(table).getByText('Waiting for the lecturer')).toBeInTheDocument()
     expect(within(table).getByText(/Live: correct single marks from the/)).toBeInTheDocument()
@@ -186,7 +186,7 @@ describe('ResultsAdminPage', () => {
     )
     expect(
       await screen.findByText(
-        'Published: 1 module, 100 marks. Students see them at 5 October 2026 at 09:00 (BST).',
+        'Scheduled: 1 module, 100 marks. Students see them at 5 October 2026 at 09:00 (BST).',
       ),
     ).toBeInTheDocument()
     expect(mock.calls('POST', '/api/admin/results/publish')[0]?.body).toMatchObject({
@@ -318,16 +318,12 @@ describe('ResultsAdminPage', () => {
       ],
     })
     render(mock)
+    // Said once, in the card's description (it used to be repeated in a second paragraph).
     expect(
-      await screen.findByText(
-        'No submitted modules are ready to publish for Autumn 2026/27. Lecturers submit modules from their Marks page.',
+      await screen.findAllByText(
+        'Nothing submitted for Autumn 2026/27 yet; lecturers submit modules from their Marks page.',
       ),
-    ).toBeInTheDocument()
+    ).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Publish results' })).toBeDisabled()
-    expect(
-      screen.getByText(
-        'Nothing submitted for Autumn 2026/27 yet; lecturers submit from their Marks page.',
-      ),
-    ).toBeInTheDocument()
   })
 })

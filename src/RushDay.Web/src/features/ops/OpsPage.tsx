@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { useOpsMetrics } from '@/api/endpoints/ops'
+import { useServerClock } from '@/api/endpoints/public'
 import type { OpsSnapshot } from '@/api/types/ops'
 import {
   Card,
@@ -38,6 +39,7 @@ const HISTORY_LIMIT = 60
 export function Component() {
   useDocumentTitle('Operations · RushDay')
   const query = useOpsMetrics()
+  const { timeZone } = useServerClock()
 
   // "Storing information from previous renders" (react.dev): a sample that differs from the last
   // one seen extends the client-side history, updated during render rather than in an effect, so
@@ -102,7 +104,8 @@ export function Component() {
         eyebrow={`Commit ${latest.commit} · ${latest.environment}`}
       >
         <p className="text-sm text-muted">
-          Running since {formatDateTime(latest.startedAt)} ({formatUptime(latest.uptimeSeconds)}).{' '}
+          Running since {formatDateTime(latest.startedAt, timeZone)} (
+          {formatUptime(latest.uptimeSeconds)}).{' '}
           <span aria-live="polite">
             {stale
               ? `Last sample ${sampleAgeSeconds}s ago; the server is too busy to answer right now.`
@@ -122,9 +125,15 @@ export function Component() {
           <CardTitle>Requests, last 60 minutes</CardTitle>
         </CardHeader>
         <p className="mb-3 text-xs text-muted">
-          History starts when the server last started ({formatDateTime(latest.startedAt)}).
+          History starts when the server last started ({formatDateTime(latest.startedAt, timeZone)}
+          ).
         </p>
-        <RequestRateChart series={latest.series} />
+        <RequestRateChart
+          series={latest.series}
+          startedAt={latest.startedAt}
+          sampledAt={latest.sampledAt}
+          timeZone={timeZone}
+        />
       </Card>
 
       <Card>
@@ -132,9 +141,15 @@ export function Component() {
           <CardTitle>Latency, last 60 minutes</CardTitle>
         </CardHeader>
         <p className="mb-3 text-xs text-muted">
-          History starts when the server last started ({formatDateTime(latest.startedAt)}).
+          History starts when the server last started ({formatDateTime(latest.startedAt, timeZone)}
+          ).
         </p>
-        <LatencyChart series={latest.series} />
+        <LatencyChart
+          series={latest.series}
+          startedAt={latest.startedAt}
+          sampledAt={latest.sampledAt}
+          timeZone={timeZone}
+        />
       </Card>
 
       <CountersPanel snapshot={latest} />

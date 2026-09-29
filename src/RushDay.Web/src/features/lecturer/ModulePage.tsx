@@ -1,4 +1,5 @@
-import { Outlet, useOutletContext, useParams } from 'react-router'
+import { ArrowLeft } from 'lucide-react'
+import { Link, Outlet, useOutletContext, useParams } from 'react-router'
 
 import { usePublicStatus } from '@/api/endpoints/public'
 import type { LecturerModuleSummary } from '@/api/types/lecturer'
@@ -64,7 +65,15 @@ export function Component() {
   return (
     <div>
       <PageHeader
-        eyebrow="Lecturer"
+        eyebrow={
+          <Link
+            to="/lecturer/modules"
+            className="inline-flex items-center gap-1 rounded-sm text-sm font-medium text-primary hover:underline"
+          >
+            <ArrowLeft aria-hidden="true" className="size-4" />
+            My modules
+          </Link>
+        }
         title={`${module.code} · ${module.title}`}
         actions={
           <MarksStatusChip

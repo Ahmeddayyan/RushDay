@@ -41,13 +41,13 @@ describe('ModuleAnnouncementsTab', () => {
 
     await events.click(screen.getByRole('button', { name: 'New announcement' }))
     await events.type(screen.getByLabelText(/^Title/), 'Room change')
-    await events.type(screen.getByLabelText(/^Announcement text/), 'CS3001 moves to B-201 next week.')
+    await events.type(screen.getByLabelText(/^Message/), 'CS3001 moves to B-201 next week.')
     await events.click(screen.getByRole('button', { name: 'Post announcement' }))
 
     expect(await screen.findByText('Room change')).toBeInTheDocument()
     expect(screen.getByText('CS3001 moves to B-201 next week.')).toBeInTheDocument()
 
-    await events.click(screen.getByRole('button', { name: 'Edit' }))
+    await events.click(screen.getByRole('button', { name: 'Edit Room change' }))
     const titleField = screen.getByLabelText(/^Title/)
     await events.clear(titleField)
     await events.type(titleField, 'Room change confirmed')
@@ -55,7 +55,7 @@ describe('ModuleAnnouncementsTab', () => {
 
     expect(await screen.findByText('Room change confirmed')).toBeInTheDocument()
 
-    await events.click(screen.getByRole('button', { name: 'Delete' }))
+    await events.click(screen.getByRole('button', { name: 'Delete Room change confirmed' }))
     const deleteButtons = screen.getAllByRole('button', { name: 'Delete' })
     await events.click(deleteButtons[deleteButtons.length - 1]!)
 

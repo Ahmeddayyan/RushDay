@@ -56,7 +56,7 @@ export function controlClassName(...extra: (string | false | null | undefined)[]
     'placeholder:text-subtle',
     'focus-visible:border-focus focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-focus',
     'aria-invalid:border-danger aria-invalid:focus-visible:outline-danger',
-    'disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-muted',
+    'disabled:cursor-not-allowed disabled:border-border disabled:bg-surface-2 disabled:text-muted',
     'read-only:bg-surface-2',
     ...extra,
   )

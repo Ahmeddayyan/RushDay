@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 
 import { useServerClock } from '@/api/endpoints/public'
 
-import { currentTime } from './zonedTime'
+import { currentTime } from '@/lib/zonedTime'
 
 /**
  * The institution's time zone (from `['public','status']`, D26) and the server's clock, so

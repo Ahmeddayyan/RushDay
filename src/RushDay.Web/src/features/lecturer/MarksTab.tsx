@@ -55,15 +55,20 @@ export function Component() {
   } else if (status === 'scheduled' && publishedAt) {
     banner = `Scheduled for publication on ${formatDateTime(publishedAt, timeZone)}. Students can't see these marks yet.`
   } else if (status === 'published' && publishedAt) {
-    banner = `Published on ${formatDateTime(publishedAt, timeZone)}.`
+    banner = `Published on ${formatDateTime(publishedAt, timeZone)}. Students can see these marks; the academic office corrects a single mark if one is wrong.`
   }
 
   const canOfferSubmit = status === 'draft' || status === 'noStudents'
+  if (!banner && !canOfferSubmit)
+    banner = "Marks for this module are locked and can't be edited here."
 
   return (
     <div className="flex flex-col gap-4">
       {banner && (
-        <div role="status" className="rounded-md border border-border bg-surface-2 px-3.5 py-2.5 text-sm text-text">
+        <div
+          role="status"
+          className="rounded-md border border-border bg-surface-2 px-3.5 py-2.5 text-sm text-text"
+        >
           {banner}
         </div>
       )}
@@ -76,15 +81,18 @@ export function Component() {
         onQueryChange={setQuery}
         {...(timeZone ? { timeZone } : {})}
         submitSlot={
-          canOfferSubmit ? (
-            <SubmitDialog
-              code={module.code}
-              myRole={myRole}
-              leader={leader}
-              total={total}
-              onSubmitted={() => void headerQuery.refetch()}
-            />
-          ) : undefined
+          canOfferSubmit
+            ? (unsaved) => (
+                <SubmitDialog
+                  code={module.code}
+                  myRole={myRole}
+                  leader={leader}
+                  total={total}
+                  unsaved={unsaved}
+                  onSubmitted={() => void headerQuery.refetch()}
+                />
+              )
+            : undefined
         }
       />
     </div>

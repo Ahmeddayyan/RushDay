@@ -1,47 +1,665 @@
-# RushDay API, first pass (stage S2): index, health, public status and the session flow.
-# Start the API with scripts/run-api.ps1 (never dotnet run). Every non-GET request needs the X-CSRF-TOKEN header,
-# whose value arrives in JSON only: from /api/auth/csrf before signing in, from the login response after.
-# Stage S11 completes this file with the student, lecturer and administrator journeys.
+# RushDay API — every route, grouped by surface. Start the API with scripts/run-api.ps1 (never dotnet run).
+#
+# Every non-GET /api request needs the X-CSRF-TOKEN header (D5); its value arrives only in JSON, never a readable
+# cookie: from GET /api/auth/csrf before signing in, and from the login/mfa-verify/me responses afterwards. This
+# file relies on your REST client's cookie jar to carry the session cookie automatically between requests (VS
+# Code's REST Client and most others do this per file/host); it never sets Cookie by hand.
+#
+# The three role blocks below each start with their own csrf -> login pair. Run a block top to bottom; switching
+# blocks (student -> lecturer -> admin) replaces the active session, which is expected — sign in again if you jump
+# back to an earlier block out of order.
 
 @RushDay_HostAddress = http://localhost:5080
 
-### JSON index (story, links)
+### JSON index (story, links, deployed commit)
 GET {{RushDay_HostAddress}}/api
 
-### Liveness (Render's health check)
+### Liveness (Render's health check; no database access; unlimited)
 GET {{RushDay_HostAddress}}/api/health/live
 
-### Readiness (database check, rate-limited per address)
+### Readiness (database reachability; rate-limited per address)
 GET {{RushDay_HostAddress}}/api/health/ready
 
-### Public status (demo accounts only when Demo:Enabled)
+### Public status (demo accounts only when Demo:Enabled; the latest and next results publication)
 GET {{RushDay_HostAddress}}/api/public/status
 
+### Unknown API route: JSON 404, never index.html
+GET {{RushDay_HostAddress}}/api/nope
+
+
+########################################################################################################
+# SESSION FLOW (anonymous) — csrf -> login -> me -> change-password -> logout, and the antiforgery check
+########################################################################################################
+
 ### 1. Anonymous antiforgery token (sets the rushday.csrf cookie)
-# @name csrf
+# @name anonCsrf
 GET {{RushDay_HostAddress}}/api/auth/csrf
 
-### 2. Sign in as the demo student
-# @name login
+### 2. A mutation without the X-CSRF-TOKEN header is refused: 400 urn:rushday:antiforgery
+POST {{RushDay_HostAddress}}/api/auth/logout
+
+### 3. POST /api/auth/register does not exist: 404 ProblemDetails, not 401 (no self-registration, D1)
+POST {{RushDay_HostAddress}}/api/auth/register
+Content-Type: application/json
+X-CSRF-TOKEN: {{anonCsrf.response.body.$.csrfToken}}
+
+{}
+
+
+########################################################################################################
+# STUDENT — sign in as S000001 and walk /api/me, /api/modules, /api/announcements
+########################################################################################################
+
+### Student: csrf
+# @name studentCsrf
+GET {{RushDay_HostAddress}}/api/auth/csrf
+
+### Student: login (answers Me directly — S000001 has no second factor)
+# @name studentLogin
 POST {{RushDay_HostAddress}}/api/auth/login
 Content-Type: application/json
-X-CSRF-TOKEN: {{csrf.response.body.$.csrfToken}}
+X-CSRF-TOKEN: {{studentCsrf.response.body.$.csrfToken}}
 
 {
   "username": "S000001",
   "password": "Student-Demo-2026!"
 }
 
-### 3. Who am I (a fresh token for the signed-in identity)
-# @name me
+### Who am I (a fresh token bound to this identity; also refreshes the token after any of the calls below)
+# @name studentMe
 GET {{RushDay_HostAddress}}/api/auth/me
 
-### 4. A mutation without the header is refused: 400 urn:rushday:antiforgery
-POST {{RushDay_HostAddress}}/api/auth/logout
+### Dashboard: name, programme, modules, completed modules, results, timetable, windows, announcements — 5 queries
+GET {{RushDay_HostAddress}}/api/me/dashboard
 
-### 5. Sign out (rotates the security stamp: every session of the account ends)
-POST {{RushDay_HostAddress}}/api/auth/logout
-X-CSRF-TOKEN: {{me.response.body.$.csrfToken}}
+### Results by year and semester (scheduled instants shown for anything not yet published)
+GET {{RushDay_HostAddress}}/api/me/results
 
-### Unknown API route: JSON 404, never index.html
-GET {{RushDay_HostAddress}}/api/nope
+### This week's timetable (current semester only)
+GET {{RushDay_HostAddress}}/api/me/timetable
+
+### My enrolments (current and completed, with withdraw eligibility per row)
+GET {{RushDay_HostAddress}}/api/me/enrolments
+
+### Personal data export (audited: student.exported_self)
+GET {{RushDay_HostAddress}}/api/me/export.json
+
+### Module catalogue (viewer-agnostic list, cached 30s; my own state comes from /api/me/enrolments instead)
+GET {{RushDay_HostAddress}}/api/modules
+
+### Module detail (uncached; live placesRemaining)
+GET {{RushDay_HostAddress}}/api/modules/CS3099
+
+### Announcements visible to me (university-wide plus my modules' own)
+GET {{RushDay_HostAddress}}/api/announcements
+
+### Enrol on CS3099 (30 places; expect 201, or 409 module-full once it fills)
+# @name studentEnrol
+POST {{RushDay_HostAddress}}/api/me/enrolments
+Content-Type: application/json
+X-CSRF-TOKEN: {{studentMe.response.body.$.csrfToken}}
+
+{
+  "moduleCode": "CS3099"
+}
+
+### Withdraw from CS3099 (before the withdrawal deadline, no submitted/published mark)
+DELETE {{RushDay_HostAddress}}/api/me/enrolments/CS3099
+X-CSRF-TOKEN: {{studentMe.response.body.$.csrfToken}}
+
+### Change password (forced for a freshly provisioned or reset account). Demo accounts are read-only (D7), so this
+### answers 409 demo-account against S000001 on the public demo; it succeeds for a real, provisioned account.
+POST {{RushDay_HostAddress}}/api/auth/change-password
+Content-Type: application/json
+X-CSRF-TOKEN: {{studentMe.response.body.$.csrfToken}}
+
+{
+  "currentPassword": "Student-Demo-2026!",
+  "newPassword": "Student-Demo-2026!"
+}
+
+### Sign out (rotates the security stamp: every session of the account ends)
+POST {{RushDay_HostAddress}}/api/auth/logout
+X-CSRF-TOKEN: {{studentMe.response.body.$.csrfToken}}
+
+
+########################################################################################################
+# LECTURER — sign in as L00001 and walk /api/lecturer (module leader on CS3001 and CS3099)
+########################################################################################################
+
+### Lecturer: csrf
+# @name lecturerCsrf
+GET {{RushDay_HostAddress}}/api/auth/csrf
+
+### Lecturer: login
+# @name lecturerLogin
+POST {{RushDay_HostAddress}}/api/auth/login
+Content-Type: application/json
+X-CSRF-TOKEN: {{lecturerCsrf.response.body.$.csrfToken}}
+
+{
+  "username": "L00001",
+  "password": "Lecturer-Demo-2026!"
+}
+
+### Who am I
+# @name lecturerMe
+GET {{RushDay_HostAddress}}/api/auth/me
+
+### My modules (this year's enrolled count, capacity, marks status)
+GET {{RushDay_HostAddress}}/api/lecturer/modules
+
+### Roster for CS3001 (paged, searched by number prefix or name fragment)
+GET {{RushDay_HostAddress}}/api/lecturer/modules/CS3001/roster?page=1&pageSize=50
+
+### Roster for CS3001 as CSV (RFC 4180, CSV-injection-safe cells)
+GET {{RushDay_HostAddress}}/api/lecturer/modules/CS3001/roster.csv
+X-CSRF-TOKEN: {{lecturerMe.response.body.$.csrfToken}}
+
+### Marks sheet for CS3001 (paged editable grid of drafts)
+GET {{RushDay_HostAddress}}/api/lecturer/modules/CS3001/marks?page=1&pageSize=100
+
+### Save marks (all-or-nothing per request; version is the optimistic-concurrency stamp of a row you have already seen)
+# @name lecturerSaveMarks
+PUT {{RushDay_HostAddress}}/api/lecturer/modules/CS3001/marks
+Content-Type: application/json
+X-CSRF-TOKEN: {{lecturerMe.response.body.$.csrfToken}}
+
+{
+  "rows": [
+    { "studentNumber": "S000001", "mark": 72, "outcome": "mark" },
+    { "studentNumber": "S000004", "outcome": "absent" }
+  ]
+}
+
+### Submit CS3001 (module leader only; 422 lists missing students if any active enrolment lacks a mark/outcome)
+POST {{RushDay_HostAddress}}/api/lecturer/modules/CS3001/marks/submit
+X-CSRF-TOKEN: {{lecturerMe.response.body.$.csrfToken}}
+
+### Module announcements for CS3001
+GET {{RushDay_HostAddress}}/api/lecturer/modules/CS3001/announcements
+
+### Create a module announcement
+# @name lecturerCreateAnnouncement
+POST {{RushDay_HostAddress}}/api/lecturer/modules/CS3001/announcements
+Content-Type: application/json
+X-CSRF-TOKEN: {{lecturerMe.response.body.$.csrfToken}}
+
+{
+  "title": "Office hours this week",
+  "body": "I will hold office hours on Thursday 14:00-15:00 in E14, room 2.03.",
+  "pinned": false
+}
+
+### Update that announcement
+PUT {{RushDay_HostAddress}}/api/lecturer/modules/CS3001/announcements/{{lecturerCreateAnnouncement.response.body.$.id}}
+Content-Type: application/json
+X-CSRF-TOKEN: {{lecturerMe.response.body.$.csrfToken}}
+
+{
+  "title": "Office hours this week (room changed)",
+  "body": "I will hold office hours on Thursday 14:00-15:00 in E14, room 2.05.",
+  "pinned": true
+}
+
+### Delete that announcement
+DELETE {{RushDay_HostAddress}}/api/lecturer/modules/CS3001/announcements/{{lecturerCreateAnnouncement.response.body.$.id}}
+X-CSRF-TOKEN: {{lecturerMe.response.body.$.csrfToken}}
+
+### Cross-role check: a lecturer on an admin route is 403, not a redirect or a 404
+GET {{RushDay_HostAddress}}/api/admin/overview
+
+### Sign out
+POST {{RushDay_HostAddress}}/api/auth/logout
+X-CSRF-TOKEN: {{lecturerMe.response.body.$.csrfToken}}
+
+
+########################################################################################################
+# ADMINISTRATOR — sign in as admin (MFA-exempt only in demo mode) and walk /api/admin
+########################################################################################################
+
+### Admin: csrf
+# @name adminCsrf
+GET {{RushDay_HostAddress}}/api/auth/csrf
+
+### Admin: login (demo admin is MFA-exempt while Demo:Enabled; a real admin gets { mfaRequired: true } here instead)
+# @name adminLogin
+POST {{RushDay_HostAddress}}/api/auth/login
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminCsrf.response.body.$.csrfToken}}
+
+{
+  "username": "admin",
+  "password": "Admin-Demo-2026!"
+}
+
+### If MFA is required instead of Me, verify with a 6-digit TOTP code (uncomment and fill in)
+# POST {{RushDay_HostAddress}}/api/auth/mfa/verify
+# Content-Type: application/json
+# X-CSRF-TOKEN: {{adminLogin.response.body.$.csrfToken}}
+#
+# {
+#   "code": "123456"
+# }
+
+### Who am I
+# @name adminMe
+GET {{RushDay_HostAddress}}/api/auth/me
+
+### --- MFA setup (a real, non-demo administrator without a second factor is gated to these routes only) ---
+### Demo accounts cannot be given a second factor (D7): both calls below answer 409 demo-account for the demo
+### `admin`. Provision a non-demo administrator first (Bootstrap:AdminPassword, or an account you create while demo
+### mode is off) to see this flow actually complete.
+
+### Start MFA setup (a shared key and an otpauth:// URI for an authenticator app)
+# @name mfaSetup
+POST {{RushDay_HostAddress}}/api/auth/mfa/setup
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### Enable MFA with a code from that shared key
+POST {{RushDay_HostAddress}}/api/auth/mfa/enable
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "code": "123456"
+}
+
+### --- Overview ---
+
+### Overview: counts, windows, publications, submission progress, recent audit, database health
+GET {{RushDay_HostAddress}}/api/admin/overview
+
+### Ops snapshot: request rate, p95/p99, error rate, load shedding, pool usage, memory (outside the global limiter)
+GET {{RushDay_HostAddress}}/api/admin/ops/metrics
+
+### Reconcile enrolled_count against active current-year enrolments (also runs at every startup and settings change)
+POST {{RushDay_HostAddress}}/api/admin/ops/reconcile
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### Demo reset: withdraw CS3099's self-enrolments-without-a-mark on demand (demo mode only; 404 otherwise)
+POST {{RushDay_HostAddress}}/api/admin/ops/demo-reset
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### --- Settings ---
+
+### Current settings
+GET {{RushDay_HostAddress}}/api/admin/settings
+
+### Update settings (a changed academicYear recomputes enrolledCount for the whole catalogue)
+PUT {{RushDay_HostAddress}}/api/admin/settings
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "academicYear": "2026/27",
+  "currentSemester": "autumn",
+  "institutionName": "RushDay Demo University",
+  "institutionShortName": "RushDay",
+  "timeZone": "Europe/London",
+  "supportEmail": "support@example.ac.uk",
+  "supportUrl": "https://example.ac.uk/support"
+}
+
+### --- Enrolment windows ---
+
+### List windows
+GET {{RushDay_HostAddress}}/api/admin/enrolment-windows
+
+### Create a window
+# @name createWindow
+POST {{RushDay_HostAddress}}/api/admin/enrolment-windows
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "academicYear": "2027/28",
+  "semester": "autumn",
+  "opensAt": "2027-09-13T09:00:00Z",
+  "closesAt": "2027-10-01T17:00:00Z",
+  "withdrawalDeadlineAt": "2027-10-29T17:00:00Z"
+}
+
+### Update that window
+PUT {{RushDay_HostAddress}}/api/admin/enrolment-windows/{{createWindow.response.body.$.id}}
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "opensAt": "2027-09-13T09:00:00Z",
+  "closesAt": "2027-10-03T17:00:00Z",
+  "withdrawalDeadlineAt": "2027-10-31T17:00:00Z"
+}
+
+### Delete that window
+DELETE {{RushDay_HostAddress}}/api/admin/enrolment-windows/{{createWindow.response.body.$.id}}
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### --- Results ---
+
+### Submission progress for Autumn of the current year
+GET {{RushDay_HostAddress}}/api/admin/results?semester=autumn
+
+### Publish Autumn 2026/27 (publishAt must be at most 90 days ahead of now — adjust the date below if it has aged
+### past that window; 422 publish-too-far-ahead means it needs to move closer). This answers 409 nothing-to-publish
+### until at least one module of the semester is fully Submitted: the marks-entry example above only entered one of
+### CS3001's 100 students, which is not enough to submit it. Follow "Re-run results day on the demo" in
+### docs/admin-guide.md for the complete recipe (enter every mark, submit, then publish).
+# @name publish
+POST {{RushDay_HostAddress}}/api/admin/results/publish
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "academicYear": "2026/27",
+  "semester": "autumn",
+  "publishAt": "2026-10-15T09:00:00Z",
+  "announce": true,
+  "note": "Results day, re-run on the demo (docs/admin-guide.md)."
+}
+
+### Reschedule that publication (only while it is still scheduled, publishAt in the future)
+PUT {{RushDay_HostAddress}}/api/admin/results/publications/{{publish.response.body.$.publication.id}}
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "publishAt": "2027-01-01T10:00:00Z"
+}
+
+### Cancel that scheduled publication (grades revert to Submitted)
+DELETE {{RushDay_HostAddress}}/api/admin/results/publications/{{publish.response.body.$.publication.id}}
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### Unpublish a live publication with a reason (use a publication id that is actually live)
+# POST {{RushDay_HostAddress}}/api/admin/results/publications/00000000-0000-0000-0000-000000000000/unpublish
+# Content-Type: application/json
+# X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+#
+# {
+#   "reason": "Exam board asked for a recheck before release."
+# }
+
+### Return CS3001 to draft with a reason (allowed before or during a scheduled publication)
+POST {{RushDay_HostAddress}}/api/admin/results/modules/CS3001/return-to-draft
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "reason": "A mark needs correcting before the exam board signs off on this module."
+}
+
+### Correct a single mark (submitted or published)
+POST {{RushDay_HostAddress}}/api/admin/results/modules/CS3001/marks/S000001/correct
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "mark": 75,
+  "outcome": "mark",
+  "reason": "Marking error found on re-check: three marks were transposed on the original sheet."
+}
+
+### --- Students ---
+
+### List/search students
+GET {{RushDay_HostAddress}}/api/admin/students?q=S00000
+
+### Create a student
+POST {{RushDay_HostAddress}}/api/admin/students
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "studentNumber": "S099999",
+  "fullName": "Test Student",
+  "programme": "BSc Computer Science",
+  "yearOfStudy": 1,
+  "email": "test.student@example.ac.uk"
+}
+
+### View a student as the student sees it, plus account state (audited: student.viewed)
+GET {{RushDay_HostAddress}}/api/admin/students/S099999
+
+### Update a student
+PUT {{RushDay_HostAddress}}/api/admin/students/S099999
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "fullName": "Test Student",
+  "programme": "BSc Computer Science",
+  "yearOfStudy": 2,
+  "email": "test.student@example.ac.uk"
+}
+
+### Export a student's data on the academic office's behalf (audited: student.exported)
+GET {{RushDay_HostAddress}}/api/admin/students/S099999/export.json
+
+### Override-enrol (ignores the window and credit limit; capacity still applies unless forceCapacity raises it by one)
+POST {{RushDay_HostAddress}}/api/admin/students/S099999/enrolments
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "moduleCode": "CS3001",
+  "reason": "Late transfer from another programme, approved by the programme lead.",
+  "forceCapacity": false
+}
+
+### Override-withdraw with a reason
+POST {{RushDay_HostAddress}}/api/admin/students/S099999/enrolments/CS3001/withdraw
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "reason": "Student confirmed they meant to enrol on CS3099, not CS3001."
+}
+
+### Mark a student as left (withdraws this year's enrolments, disables the account)
+POST {{RushDay_HostAddress}}/api/admin/students/S099999/leave
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "reason": "Withdrew from the university, confirmed by the registry."
+}
+
+### --- Modules ---
+
+### List modules (includeInactive to also see retired ones)
+GET {{RushDay_HostAddress}}/api/admin/modules?includeInactive=false
+
+### Create a module
+POST {{RushDay_HostAddress}}/api/admin/modules
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "code": "ZZ1001",
+  "title": "Test Module",
+  "description": "A module created for exercising RushDay.Api.http.",
+  "credits": 15,
+  "capacity": 30,
+  "semester": "autumn"
+}
+
+### Update it (capacity is never lowered below enrolledCount; an unchanged capacity is always accepted)
+PUT {{RushDay_HostAddress}}/api/admin/modules/ZZ1001
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "title": "Test Module",
+  "description": "A module created for exercising RushDay.Api.http.",
+  "credits": 15,
+  "capacity": 40,
+  "semester": "autumn",
+  "isActive": true
+}
+
+### Read-only roster of any module (registry access, D33)
+GET {{RushDay_HostAddress}}/api/admin/modules/CS3001/roster
+
+### Read-only marks sheet of any module
+GET {{RushDay_HostAddress}}/api/admin/modules/CS3001/marks
+
+### Assign lecturers (exactly one leader; nobody who has left)
+PUT {{RushDay_HostAddress}}/api/admin/modules/ZZ1001/lecturers
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "assignments": [
+    { "staffNumber": "L00001", "role": "leader" }
+  ]
+}
+
+### Trim an over-capacity module back to its capacity, with a reason
+POST {{RushDay_HostAddress}}/api/admin/modules/ZZ1001/trim-to-capacity
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "reason": "Correcting drift inherited from a earlier manual data fix."
+}
+
+### --- Lecturers ---
+
+### List/search lecturers
+GET {{RushDay_HostAddress}}/api/admin/lecturers?q=Khan
+
+### Create a lecturer
+POST {{RushDay_HostAddress}}/api/admin/lecturers
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "staffNumber": "L00099",
+  "fullName": "Test Lecturer",
+  "title": "Dr",
+  "department": "CS",
+  "email": "test.lecturer@example.ac.uk"
+}
+
+### Update a lecturer
+PUT {{RushDay_HostAddress}}/api/admin/lecturers/L00099
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "fullName": "Test Lecturer",
+  "title": "Prof",
+  "department": "CS",
+  "email": "test.lecturer@example.ac.uk"
+}
+
+### Mark a lecturer as left
+POST {{RushDay_HostAddress}}/api/admin/lecturers/L00099/leave
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "reason": "Left the university at the end of the academic year."
+}
+
+### --- Accounts ---
+### Note: while signed in as the demo `admin`, anything you provision here is itself made a demo account (a demo
+### actor can only ever create more demo data, never a real one) and demo accounts are read-only — lock/unlock/
+### disable/enable/reset-mfa/reset-password below will each answer 409 demo-account against it. That is correct
+### product behaviour, not a bug in this file: run the same sequence as a non-demo administrator to see them succeed.
+
+### List/search accounts
+GET {{RushDay_HostAddress}}/api/admin/accounts?role=Student&state=active
+
+### Provision an account for the existing student S099999 (a temporary password shown once; omit temporaryPassword
+### to have one generated). studentNumber/staffNumber is required exactly when role is Student/Lecturer, and must
+### name a student/lecturer record that already exists (create one first, see the Students section above).
+# @name provisionAccount
+POST {{RushDay_HostAddress}}/api/admin/accounts
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "username": "S099999",
+  "displayName": "Test Student",
+  "role": "Student",
+  "studentNumber": "S099999"
+}
+
+### Lock the account
+POST {{RushDay_HostAddress}}/api/admin/accounts/{{provisionAccount.response.body.$.account.id}}/lock
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### Unlock it
+POST {{RushDay_HostAddress}}/api/admin/accounts/{{provisionAccount.response.body.$.account.id}}/unlock
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### Disable it
+POST {{RushDay_HostAddress}}/api/admin/accounts/{{provisionAccount.response.body.$.account.id}}/disable
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### Enable it again
+POST {{RushDay_HostAddress}}/api/admin/accounts/{{provisionAccount.response.body.$.account.id}}/enable
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### Reset its second factor (an administrator's lost authenticator device)
+POST {{RushDay_HostAddress}}/api/admin/accounts/{{provisionAccount.response.body.$.account.id}}/reset-mfa
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### Reset its password (sets must-change-password; body is optional, a password is generated when omitted)
+POST {{RushDay_HostAddress}}/api/admin/accounts/{{provisionAccount.response.body.$.account.id}}/reset-password
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{}
+
+### --- University announcements ---
+
+### List
+GET {{RushDay_HostAddress}}/api/admin/announcements
+
+### Create a university-wide announcement
+# @name createUniAnnouncement
+POST {{RushDay_HostAddress}}/api/admin/announcements
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "title": "Library extended hours during exams",
+  "body": "The main library is open 24 hours from 1 to 19 December.",
+  "pinned": false
+}
+
+### Update it
+PUT {{RushDay_HostAddress}}/api/admin/announcements/{{createUniAnnouncement.response.body.$.id}}
+Content-Type: application/json
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+{
+  "title": "Library extended hours during exams (updated)",
+  "body": "The main library is open 24 hours from 1 to 20 December.",
+  "pinned": true
+}
+
+### Delete it
+DELETE {{RushDay_HostAddress}}/api/admin/announcements/{{createUniAnnouncement.response.body.$.id}}
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### --- Audit ---
+
+### Filtered audit log
+GET {{RushDay_HostAddress}}/api/admin/audit?action=enrolment.created&page=1&pageSize=50
+
+### CSV export (itself audited: audit.exported; truncation is signalled with a trailing comment line)
+GET {{RushDay_HostAddress}}/api/admin/audit/export.csv
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}
+
+### --- Cross-role checks ---
+
+### An administrator on a lecturer-only route is 403, not a silent pass-through
+GET {{RushDay_HostAddress}}/api/lecturer/modules
+
+### Sign out (rotates the security stamp: every session of this account ends)
+POST {{RushDay_HostAddress}}/api/auth/logout
+X-CSRF-TOKEN: {{adminMe.response.body.$.csrfToken}}

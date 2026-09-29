@@ -57,6 +57,15 @@ function summarise(entry, result) {
   if (metrics.shed_503) run.metrics.shed = metrics.shed_503.count
   if (metrics.logins_ok) run.metrics.loginsOk = metrics.logins_ok.count
   if (metrics.logins_rate_limited) run.metrics.loginsRateLimited = metrics.logins_rate_limited.count
+  // `capacity` is a business fact (the module's places at run time), not a k6 metric, so it comes
+  // from runs.json rather than the summary; when both it and `accepted` are known, `oversold`
+  // (05-frontend.md section 8, the EnrolmentRushChart hero figure) is derived from them.
+  if (entry.capacity !== undefined) {
+    run.metrics.capacity = entry.capacity
+    if (run.metrics.accepted !== undefined) {
+      run.metrics.oversold = Math.max(0, run.metrics.accepted - entry.capacity)
+    }
+  }
 
   return run
 }

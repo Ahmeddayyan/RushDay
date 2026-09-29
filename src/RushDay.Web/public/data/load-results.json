@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-28T22:02:20.192Z",
+  "generatedAt": "2026-09-29T06:11:00.950Z",
   "machine": "Developer laptop: Windows 11, .NET 10, PostgreSQL 18 (native)",
   "runs": [
     {
@@ -19,7 +19,9 @@
         "achievedRate": 512.6947728465387,
         "accepted": 154,
         "rejectedFull": 84,
-        "errored": 262
+        "errored": 262,
+        "capacity": 30,
+        "oversold": 124
       }
     },
     {
@@ -29,6 +31,7 @@
       "label": "Results day (v0, N+1 dashboard query)",
       "ranAt": "2026-09-27T20:13:36",
       "source": "load/results/results-day-20260927-201336.json",
+      "targetRate": 800,
       "notes": "Ramping arrival rate to 800 requests/s against the v0 dashboard endpoint.",
       "metrics": {
         "requests": 104399,

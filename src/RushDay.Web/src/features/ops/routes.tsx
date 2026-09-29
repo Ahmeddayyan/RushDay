@@ -1,4 +1,22 @@
 import type { RouteObject } from 'react-router'
 
-/** Filled in stage S10. */
-export const opsRoutes: RouteObject[] = []
+import { ErrorBoundary } from '@/app/ErrorBoundary'
+import { RequireRole } from '@/app/guards'
+import { AppShell } from '@/components/layout/AppShell'
+
+/**
+ * `/admin/ops` (05-frontend.md sections 7 and 10): administrators only, 1400 px content width
+ * (`AppShell wide`) for the tiles and charts.
+ */
+export const opsRoutes: RouteObject[] = [
+  {
+    element: <RequireRole roles={['Admin']} />,
+    errorElement: <ErrorBoundary />,
+    children: [
+      {
+        element: <AppShell wide />,
+        children: [{ path: '/admin/ops', lazy: () => import('./OpsPage') }],
+      },
+    ],
+  },
+]

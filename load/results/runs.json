@@ -5,6 +5,7 @@
     "version": "v0",
     "label": "Enrolment rush (v0, read-then-write update)",
     "ranAt": "2026-09-27T20:12:28",
+    "capacity": 30,
     "notes": "500 students racing for 30 places on CS3099 against the v0 API, which has no atomic conditional update."
   },
   {
@@ -13,6 +14,7 @@
     "version": "v0",
     "label": "Results day (v0, N+1 dashboard query)",
     "ranAt": "2026-09-27T20:13:36",
+    "targetRate": 800,
     "notes": "Ramping arrival rate to 800 requests/s against the v0 dashboard endpoint."
   },
   {

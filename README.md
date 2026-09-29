@@ -1,5 +1,7 @@
 # RushDay
 
+[![CI](https://github.com/Ahmeddayyan/RushDay/actions/workflows/ci.yml/badge.svg)](https://github.com/Ahmeddayyan/RushDay/actions/workflows/ci.yml)
+
 I built RushDay because my own university's portal fell over every results day and enrolment window. I wanted to
 understand why that happens and to build a portal that doesn't crash under the same load.
 
@@ -7,8 +9,8 @@ RushDay is a university student portal: students see marks the moment they are p
 places last, withdraw before a deadline and read announcements; lecturers see rosters, enter and submit marks, and
 post module announcements; administrators run enrolment windows, publish results at a chosen instant, correct and
 unpublish when the exam board says so, fix enrolments with a reason, provision accounts, and watch the system under
-load in plain language. Everything that changes a mark, an enrolment or an account is audited, and the audit table
-cannot be rewritten even by the application's own database role.
+load in plain language. Everything that changes a mark, an enrolment or an account is audited in the same
+transaction as the change, and the database itself rejects any attempt to edit or delete an audit row.
 
 The build is deliberately in two acts. **v0** is a naive, straightforward implementation — check-then-write
 enrolment, one query per module on the dashboard, no auth, no caching — load-tested to find out exactly how and why
@@ -21,6 +23,23 @@ measured, it isn't claimed.
 tier spins down when idle; the first request after a pause can take 30-60 seconds (the login page says so).
 
 **Repository:** https://github.com/Ahmeddayyan/RushDay · **Owner:** Ahmed Ayyan
+
+## What this project demonstrates
+
+- **Concurrency control you can check.** Enrolment claims a place with one conditional `UPDATE ... WHERE
+  enrolled_count < capacity`; an integration test fires 200 parallel enrolments at a 30-place module and expects
+  exactly 30 successes, and authenticated k6 rushes of 300 students run against the full 20,000-student dataset.
+- **Measure, then fix.** v0 was load-tested first; each v1 fix answers a measured failure and has its own ADR.
+- **Security as a design input.** Cookie sessions with antiforgery, mandatory TOTP for administrators, role and
+  module-level authorization enforced in the queries themselves, rate limiting, strict security headers, an encrypted
+  key ring, and an append-only audit trail.
+- **Adversarial review as part of the process.** Each backend stage was reviewed by an independent reviewer trying
+  to break it (sessions that outlived a disabled account, a deadlock between administrative enrolments, a mark that
+  could be stranded by a re-enrolment); every blocker and major finding was fixed with a regression test that failed
+  before the fix, and the reasoning for the rest is recorded in the spec.
+- **A real product, not a load-test harness.** Three roles, the full results lifecycle (draft, submit, publish at an
+  instant, reschedule, cancel, unpublish, correct), accounts and provisioning, an ops page, WCAG 2.2 AA as the
+  accessibility target, and a public page that tells this story with the numbers.
 
 ## Demo accounts
 
@@ -59,7 +78,7 @@ is the SPA and its client-side routing.
 
 ```
 docs/spec                 the specification: the single source of truth for v1 (start at 00-overview.md)
-docs/adr                  architecture decision records, each with a before/after load run
+docs/adr                  architecture decision records: the reasoning behind each major decision
 docs/load-results         what each load run showed, with numbers
 docs/deployment.md        every configuration variable, the customer deployment path, key rotation, backup/restore
 docs/admin-guide.md       running the product day to day: windows, publishing, overrides, accounts, the demo switch
@@ -74,11 +93,12 @@ scripts/                  run-api, db-create, seed, reset-db, load, check-story
 
 ## Run it locally
 
-Prerequisites: .NET 10 SDK, Node 24, k6, and a PostgreSQL 18 reachable at `localhost:5432`.
+Prerequisites: .NET 10 SDK, Node 24, k6, and a PostgreSQL 18 reachable at `localhost:5432` (a native install or
+Docker both work).
 
-**Windows Smart App Control blocks `dotnet run` on this machine** (and would on any machine with the same setting)
-on freshly built, unsigned assemblies. Every local run of the API goes through `scripts/run-api.ps1`, which publishes
-a framework-dependent single-file build and starts the `.exe` directly — never `dotnet run` or `dotnet watch run`.
+Run the API with `scripts/run-api.ps1`: it publishes a framework-dependent single-file build and starts it on
+http://localhost:5080. It is the one supported way to run the API locally, and it also works on Windows machines
+where Smart App Control blocks `dotnet run` on freshly built, unsigned assemblies.
 
 ```powershell
 .\scripts\db-create.ps1                              # creates the rushday role and database (native PostgreSQL)
@@ -113,14 +133,14 @@ Everything else needs a session — see `RushDay.Api.http` for the full login �
 ```powershell
 dotnet test tests\RushDay.UnitTests
 
-# Integration tests: Testcontainers in CI; locally, no Docker is available on this machine, so point at native
-# PostgreSQL instead (the factory creates and drops a throwaway database itself):
+# Integration tests use Testcontainers (Docker) by default, as in CI. Without Docker, point them at a native
+# PostgreSQL instead; the test factory creates and drops its own throwaway database:
 $env:RUSHDAY_TEST_CONNECTION = "Host=localhost;Port=5432;Database=rushday_test;Username=rushday;Password=rushday"
 dotnet test tests\RushDay.IntegrationTests
 
 cd src\RushDay.Web
 npm test              # Vitest component tests (jsdom)
-npm run test:e2e      # Playwright journeys against a running API (stage S12)
+npm run test:e2e      # Playwright journeys and accessibility scans against a running API
 ```
 
 `dotnet build RushDay.slnx -c Release` and `npm run lint && npm run typecheck && npm run build` (in
@@ -156,7 +176,7 @@ Full write-up: [docs/load-results/2026-09-27-v0-baseline.md](docs/load-results/2
   race with no isolation between the read and the write. The database also ran out of connection slots
   (Postgres `53300`) under the resulting retry storm, and 260 of 500 connections were refused at the TCP level
   before the app ever saw them.
-- **Results day**: the dashboard everyone predicted would fall over first handled 800 requests/second with a p95 of
+- **Results day**: the dashboard I expected to fall over first handled 800 requests/second with a p95 of
   6.5 ms and zero errors — its ~15-query-per-request N+1 pattern is cheap when the database is on the same machine.
   Finding its real cost needed a different experiment (see the injected-latency plan in
   [`docs/spec/04-performance-and-ops.md`](docs/spec/04-performance-and-ops.md) section 9).
@@ -164,12 +184,12 @@ Full write-up: [docs/load-results/2026-09-27-v0-baseline.md](docs/load-results/2
   requests/second, where p95 latency jumped from 6.5 ms to 2.5 seconds, and a hard throughput ceiling of roughly
   700-900 requests/second that offering more load made *worse*, not better.
 
-### v1 (stage S13 — not yet measured)
+### v1 (not yet measured)
 
 v1's fixes are built and tested (the acceptance checklist in
 [`docs/spec/00-overview.md`](docs/spec/00-overview.md) section 8 tracks each one against an integration test), but
-the before/after load numbers this section will quote once stage S13 runs the evidence procedure
-(`docs/spec/04-performance-and-ops.md` section 9) are **not yet recorded**. Expect, and do not yet cite as fact:
+the before/after load numbers this section will quote once the release evidence run follows the procedure in
+`docs/spec/04-performance-and-ops.md` section 9 are **not yet recorded**. Expect, and do not yet cite as fact:
 zero oversold places on the enrolment rush, `rushday.dashboard.queries = 5` (down from v0's ~15), 503s with
 `Retry-After` replacing multi-second failures beyond the knee, and the login endpoint's own throughput under its
 concurrency guard. The dated write-up will land at `docs/load-results/2026-10-xx-v1-hardened.md`, linked from every
@@ -180,6 +200,6 @@ ADR above.
 The specification (`docs/spec/00` through `06`) is the single source of truth for v1 — where any other document
 disagrees with it, the spec wins and the other document gets fixed. Start at
 [`docs/spec/00-overview.md`](docs/spec/00-overview.md) for the story, personas, scope and the decision register;
-[`docs/adr/`](docs/adr/) has the fifteen-minute version of each major call, each linking the load evidence that
-motivated it. [`docs/deployment.md`](docs/deployment.md) and [`docs/admin-guide.md`](docs/admin-guide.md) are the
+[`docs/adr/`](docs/adr/) records the reasoning behind each major decision, and the performance-related ones link the
+load evidence that motivated them. [`docs/deployment.md`](docs/deployment.md) and [`docs/admin-guide.md`](docs/admin-guide.md) are the
 operational side: how to deploy this for your own institution, and how to run it day to day once it's live.

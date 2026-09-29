@@ -194,7 +194,7 @@ see the rotation log below):
 
 | Date | What was rotated | Why |
 |---|---|---|
-| 2026-09-27 | Neon owner-role password (first deploy credential) | The password was shared in a chat session during initial setup and needed to be treated as exposed; rotated before any real data was stored. |
+| 2026-09-29 | Neon owner-role password (first deploy credential) | The password was shared in a chat session during initial setup (27 September) and was treated as exposed; rotated before any real data was stored, and the live demo was confirmed healthy afterwards. |
 | *(pending)* | Neon password, ahead of stage S13's release | Routine rotation immediately before `v1` merges to `main` and starts carrying the live demo's real traffic — see `06-implementation-plan.md` stage S0. |
 
 ## 9. Backup and restore (Neon point-in-time restore)

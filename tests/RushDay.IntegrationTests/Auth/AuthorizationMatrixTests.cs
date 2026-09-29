@@ -11,8 +11,6 @@ namespace RushDay.IntegrationTests.Auth;
 [Collection(ApiCollection.Name)]
 public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
 {
-    private const string StaffSkip = "S4/S6: the lecturer and administrator routes arrive in S6";
-
     [Fact]
     public async Task Anonymous_caller_is_401_problem_on_authenticated_routes()
     {
@@ -125,7 +123,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         await enrol.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Student_on_admin_student_route_is_403()
     {
         using var student = await factory.LoginAsync(DemoAccounts.StudentUsername, DemoAccounts.StudentPassword);
@@ -134,7 +132,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         await response.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Student_on_lecturer_routes_is_403()
     {
         using var student = await factory.LoginAsync(DemoAccounts.StudentUsername, DemoAccounts.StudentPassword);
@@ -145,7 +143,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         Assert.Equal(HttpStatusCode.Forbidden, roster.StatusCode);
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Lecturer_on_admin_routes_is_403()
     {
         using var lecturer = await factory.LoginAsync(DemoAccounts.LecturerUsername, DemoAccounts.LecturerPassword);
@@ -154,7 +152,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         await overview.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Admin_on_lecturer_modules_is_403()
     {
         using var admin = await factory.LoginAsync(DemoAccounts.AdminUsername, DemoAccounts.AdminPassword);
@@ -163,7 +161,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         await response.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Admin_on_lecturer_marks_put_is_403()
     {
         using var admin = await factory.LoginAsync(DemoAccounts.AdminUsername, DemoAccounts.AdminPassword);
@@ -172,7 +170,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         await response.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Lecturer_on_foreign_module_is_403_not_your_module()
     {
         using var lecturer = await factory.LoginAsync(DemoAccounts.LecturerUsername, DemoAccounts.LecturerPassword);
@@ -186,7 +184,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         await unknown.AssertProblemAsync(HttpStatusCode.Forbidden, "not-your-module");
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Teacher_cannot_submit_marks()
     {
         // L00006 teaches CS3099; L00001 leads it (01-domain-and-data.md section 6 step 7).
@@ -196,7 +194,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         await response.AssertProblemAsync(HttpStatusCode.Forbidden, "not-module-leader");
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Lecturer_cannot_edit_announcement_of_another_module()
     {
         using var admin = await factory.LoginAsync(DemoAccounts.AdminUsername, DemoAccounts.AdminPassword);
@@ -211,7 +209,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         await response.AssertProblemAsync(HttpStatusCode.NotFound, "announcement-not-found");
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Lecturer_cannot_delete_university_announcement()
     {
         using var admin = await factory.LoginAsync(DemoAccounts.AdminUsername, DemoAccounts.AdminPassword);
@@ -225,7 +223,7 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         await response.AssertProblemAsync(HttpStatusCode.NotFound, "announcement-not-found");
     }
 
-    [Fact(Skip = StaffSkip)]
+    [Fact]
     public async Task Admin_gated_by_mfa_cannot_publish()
     {
         var admin = await factory.ProvisionAsync();

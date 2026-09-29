@@ -48,10 +48,16 @@ and without `dotnet run`, and (section 5) what the already-implemented stage S1 
    WITH (FORCE)` and `CREATE DATABASE rushday_test` (the role needs `CREATEDB`, which `scripts/db-create.ps1` grants),
    migrates, seeds 300 students with `SeedResultsDay = 2026-01-26T09:00:00Z`, runs the backfills with demo on, and drops
    the database at the end. It constructs `new FakeTimeProvider(new DateTimeOffset(2026, 9, 27, 12, 0, 0,
-   TimeSpan.Zero))`, registers it as the `TimeProvider` singleton and exposes it as `factory.Clock`; tests that advance
-   time call `factory.Clock.Advance(...)` and restore it in `Dispose`. Identity's `UserManager`, `SignInManager`,
-   security-stamp validator and cookie handler resolve that same `TimeProvider` from DI. CI leaves the variable unset and
-   uses Testcontainers.
+   TimeSpan.Zero))`, registers it as the `TimeProvider` singleton and exposes it as `factory.Clock`. A `FakeTimeProvider`
+   cannot go back, so tests that advance the shared clock move it by **seconds only** (other tests assume the same day)
+   and never "restore" it; a test that needs minutes or hours (session lifetimes, the 5-minute stamp interval, the MFA
+   challenge, a publication instant) takes a host with a clock of its own, `factory.Derive(configure, clock: new
+   FakeTimeProvider(...))`. `SignInManager`, the security-stamp validator, the cookie handler, the limiters of
+   `LoginThrottle` and every application service resolve that `TimeProvider` from DI; **Identity's lockout
+   (`AccessFailedAsync`, `IsLockedOutAsync`) and the TOTP check use the real clock**, so a lockout end is asserted
+   against `DateTimeOffset.UtcNow` (about 15 minutes ahead) and TOTP codes are computed from the real time
+   (`Totp.FreshCode`, which never repeats a step the server may have accepted). CI leaves the variable unset and uses
+   Testcontainers.
 9. **Package versions** are fixed by `01`–`05`: `Microsoft.AspNetCore.Identity.EntityFrameworkCore` 10.0.12,
    `Microsoft.AspNetCore.DataProtection.EntityFrameworkCore` 10.0.12, `Microsoft.Extensions.Caching.Hybrid` 10.10.0,
    `Microsoft.Extensions.Diagnostics.Testing` 10.10.0, `Microsoft.Extensions.TimeProvider.Testing` 10.10.0 (tests only);
@@ -148,13 +154,13 @@ factory with auth helpers and the fake clock.
 **Owns**
 - `src/RushDay.Api/Program.cs` (thin: builder → `AddRushDayServices` → `StartupTasks.RunAsync` → `UseRushDayPipeline` → map endpoints → run), `Startup/{ServiceRegistration,PipelineConfiguration,StartupTasks,RequestLoggingMiddleware}.cs`. `StartupTasks` implements the demo guard, the KEK check, migration on `ConnectionStrings:Migrations` when set, the seeder only in demo mode or under `--migrate-and-seed`, and the backfills (`01` section 6, `04` section 7).
 - `src/RushDay.Api/Options/{DatabaseOptions,RateLimitingOptions,DemoOptions,BootstrapOptions,BrandingOptions,AuthOptions,SecurityOptions,DataProtectionOptions}.cs` (moves `DatabaseOptions.cs` from the project root).
-- `src/RushDay.Api/Auth/{Policies,RushDayClaims,RushDayClaimsPrincipalFactory,RushDayCookieEvents,RushDaySecurityStampValidator,AntiforgeryEndpointFilter,MustChangePasswordFilter,MfaSetupRequiredFilter,TeachesModuleRequirement,TeachesModuleHandler,CurrentUser,HttpAuditContext,LoginThrottle}.cs`.
-- `src/RushDay.Api/Security/{SecurityHeadersMiddleware,RateLimitPolicies,ProblemTypes,ProblemResults,ProblemDetailsCustomizer,AesGcmXmlEncryptor,AesGcmXmlDecryptor,DataProtectionKeyEncryptionKey,IpHasher,HostFilteringSetup}.cs`.
+- `src/RushDay.Api/Auth/{Policies,RushDayClaims,RushDayClaimsPrincipalFactory,RushDayCookieEvents,RushDaySecurityStampValidator,AntiforgeryEndpointFilter,MustChangePasswordFilter,MfaSetupRequiredFilter,TeachesModuleRequirement,TeachesModuleHandler,CurrentUser,HttpAuditContext,LoginThrottle,SlidingWindowCounter,MfaChallengeBinding,ReplayProtectedAuthenticatorTokenProvider}.cs` (the last three from the S2 review).
+- `src/RushDay.Api/Security/{SecurityHeadersMiddleware,RateLimitPolicies,ProblemTypes,ProblemResults,ProblemDetailsCustomizer,AesGcmXmlEncryptor,AesGcmXmlDecryptor,DataProtectionKeyEncryptionKey,IpHasher,HostFilteringSetup,KeyRingHygiene}.cs`, `src/RushDay.Api/Startup/RushDayDbContextFactory.cs` (the singleton `IDbContextFactory<RushDayDbContext>` every cache factory uses, 04 section 4).
 - `src/RushDay.Api/Observability/{RushDayMetrics,MetricsSnapshotService,MetricsSnapshot,DbCommandCounter}.cs` (every instrument of `04` section 6.1 declared here; later stages only record).
 - `src/RushDay.Api/Hosting/SpaHosting.cs` (both fallbacks and the 503 endpoint `AllowAnonymous`).
 - `src/RushDay.Api/Endpoints/{IndexEndpoints,HealthEndpoints,PublicEndpoints,AuthEndpoints}.cs` (`AuthEndpoints` includes the `/api/auth/mfa/*` routes of `02` section 2.4); **deletes** `Endpoints/StudentEndpoints.cs`, `Endpoints/ModuleEndpoints.cs`, `Contracts/Dashboard.cs`, `Contracts/Enrolments.cs`, `Contracts/Modules.cs` (S4 recreates the contracts it needs), and the working-tree-only `wwwroot/index.html`.
 - `src/RushDay.Api/Contracts/{Common,Auth,Public}.cs`.
-- `src/RushDay.Infrastructure/Caching/{CacheKeys,EnrolmentWindowCache,SettingsCache,LecturerModuleCache,PublicationCache}.cs`, `Infrastructure/Accounts/AccountService.cs` (provision, lock, unlock, disable, enable, reset password, reset MFA, change password, the `demo-account` guard; used by the login flow tests and by S6), `Infrastructure/Audit/{AuditWriter,IAuditContext}.cs` (`IAuditContext` supplies actor, request id and `ipHash`; `Api/Auth/HttpAuditContext` implements it).
+- `src/RushDay.Infrastructure/Caching/{CacheKeys,EnrolmentWindowCache,SettingsCache,LecturerModuleCache,PublicationCache}.cs`, `Infrastructure/Accounts/AccountService.cs` (provision, lock, unlock, disable, enable, reset password, reset MFA, change password, the `demo-account` guard; used by the login flow tests and by S6), `Infrastructure/Audit/{AuditWriter,IAuditContext,AuditHashes}.cs` (`IAuditContext` supplies actor, whether the actor is a demo account, request id and `ipHash`; `Api/Auth/HttpAuditContext` implements it).
 - `src/RushDay.Api/RushDay.Api.csproj` (GC settings), `appsettings.json`, `appsettings.Development.json` (the Development column of `03` section 8, including `Security:TrustForwardedHeaders=true` and the relaxed `RateLimiting`), `Properties/launchSettings.json`, `RushDay.Api.http` (first pass).
 - `render.yaml`: `healthCheckPath: /api/health/live`, `autoDeployTrigger: checksPass`, `region: frankfurt`, env vars `ASPNETCORE_ENVIRONMENT=Production`, `ASPNETCORE_HTTP_PORTS=8080`, `PORT=8080`, `Database__MigrateOnStartup=true`, `Database__BackfillOnStartup=true`, `Security__TrustForwardedHeaders=true`, `Branding__TimeZone=Europe/London`, and `sync: false` for `ConnectionStrings__RushDay`, `ConnectionStrings__Migrations`, `DataProtection__KeyEncryptionKey`, `Bootstrap__AdminPassword`, `Branding__InstitutionName`, `Branding__InstitutionShortName`. **No** `Demo__*` and **no** `Database__Seed*` keys (D29); a comment says the public demo sets `Demo__Enabled` and `Demo__PublicDemoAcknowledged` in the Render dashboard only.
 - `tests/RushDay.UnitTests/Observability/**` (`MetricsSnapshotService` bucketing and percentiles, `DbCommandCounter`), and in `tests/RushDay.UnitTests/RushDay.UnitTests.csproj` only the added `ProjectReference` to `RushDay.Api` and `PackageReference` `Microsoft.Extensions.Diagnostics.Testing` 10.10.0.
@@ -229,6 +235,22 @@ placeholder routes, builds into `wwwroot`, is served by the API, and is built in
 **Goal**: `/api/me/*`, `/api/modules*`, `/api/announcements` with the atomic enrolment, year-scoped reads, the
 five-query dashboard, the catalogue cache, the visibility rule, the personal export, audit rows and metrics.
 
+**Hooks and patterns S2 provides** (S4 edits none of S2's files):
+- Services: implement `static partial void AddStudentSurface(IServiceCollection services)` of `Startup/ServiceRegistration.cs`
+  in a file of its own (`public static partial class ServiceRegistration { static partial void AddStudentSurface(IServiceCollection services) { ... } }`,
+  namespace `RushDay.Api.Startup`), for example `src/RushDay.Api/Startup/ServiceRegistration.Student.cs`; routes:
+  implement `static partial void MapStudentSurface(RouteGroupBuilder api)` of `Startup/PipelineConfiguration.cs` the
+  same way (`Startup/PipelineConfiguration.Student.cs`), mapping onto the `/api` group so the antiforgery filter and the
+  gates apply. Both files are S4's.
+- Caches: `CatalogueCache` and `AnnouncementCache` take `IDbContextFactory<RushDayDbContext>` (registered by S2) and
+  open their own context inside the factory (`await using var db = await contexts.CreateDbContextAsync(ct)`), never
+  the caller's scoped context, and read through `CacheKeys.GetOrCreateAsync` so the fill is not counted as the
+  request's commands (04 section 4).
+- `DashboardTests` measure the handler's queries only: `DbCommandCounter` starts after authorization and skips cache
+  fills, so the metric is 5 whether or not the request re-checked the stamp or filled a cache; the log cross-check uses
+  `factory.DeriveWithCommandLog()`, a warm-up call, `GetFakeLogCollector().Clear()` and a second call without moving the
+  clock (04 section 6.1).
+
 **Owns**
 - `src/RushDay.Infrastructure/Enrolments/{EnrolmentService,EnrolmentWindowService}.cs`, `Infrastructure/Queries/{DashboardQuery,ResultsQuery,TimetableQuery,MyEnrolmentsQuery,ModuleDetailQuery,StudentExportQuery}.cs`, `Infrastructure/Grades/GradeQueries.cs`, `Infrastructure/Caching/{CatalogueCache,AnnouncementCache}.cs`, `Infrastructure/Announcements/AnnouncementService.cs` (read for all roles; create/update/delete used by S6).
 - `src/RushDay.Api/Endpoints/{MeEndpoints,ModuleEndpoints,AnnouncementEndpoints}.cs` (including `GET /api/me/export.json`), `Contracts/{Dashboard,Modules,Enrolments,Announcements,Export}.cs`.
@@ -261,6 +283,18 @@ with `ReauthDialog` while a form is dirty, all against the S2 API; guards redire
 **Goal**: `/api/lecturer/*` and `/api/admin/*` complete with audit rows, `TeachesModule` and leader enforcement, the
 results lifecycle (publish, reschedule, cancel, unpublish, return to draft, correct), student and lecturer editing and
 leaving, module reads for the registry, the ops snapshot, reconcile and the demo reset.
+
+**Hooks and patterns S2 provides** (S6 edits none of S2's files):
+- Services: implement `static partial void AddStaffSurface(IServiceCollection services)` of `Startup/ServiceRegistration.cs`
+  in a file of its own (for example `src/RushDay.Api/Startup/ServiceRegistration.Staff.cs`); routes: implement
+  `static partial void MapStaffSurface(RouteGroupBuilder api)` of `Startup/PipelineConfiguration.cs` the same way
+  (`Startup/PipelineConfiguration.Staff.cs`), mapping `/lecturer` and `/admin` groups onto the `/api` group. Both files
+  are S6's.
+- Accounts go through S2's `AccountService`, which already refuses a demo actor on a real account (409 `demo-account`)
+  and makes what a demo actor provisions a demo account (02 section 8.5); `AccountTests` cover it through the real
+  routes.
+- `OpsTests` expect `dataQuality.refreshedAt` only from the second snapshot on: the first poll after an idle spell
+  starts the refresh (04 section 6.2).
 
 **Owns**
 - `src/RushDay.Infrastructure/Grades/{MarksService,ResultsPublicationService}.cs` (publication, reschedule, cancel, unpublish, return to draft, correction), `Infrastructure/Queries/{RosterQuery,MarksSheetQuery,AdminStudentQuery,AdminResultsQuery,AuditQuery,OverviewQuery}.cs`, `Infrastructure/Modules/ModuleAdminService.cs` (create, update with the capacity and semester guards, lecturers, trim), `Infrastructure/Settings/SettingsService.cs` (year change reconciles), `Infrastructure/Enrolments/EnrolmentWindowAdminService.cs`, `Infrastructure/Students/StudentAdminService.cs` (create, update, leave), `Infrastructure/Lecturers/LecturerAdminService.cs` (create, update, leave), `Infrastructure/Audit/AuditCsvWriter.cs`, `Infrastructure/Ops/{ReconcileService,DemoResetService}.cs`.
@@ -374,17 +408,17 @@ after S11.
 |---|---|
 | `src/RushDay.Domain/**` | S1 → S1R |
 | `src/RushDay.Infrastructure/{Identity,Persistence,Seeding}/**`, `DependencyInjection.cs`, `.csproj` | S1 → S1R |
-| `src/RushDay.Infrastructure/Caching/{CacheKeys,EnrolmentWindowCache,SettingsCache,LecturerModuleCache,PublicationCache}.cs`, `Accounts/**`, `Audit/{AuditWriter,IAuditContext}.cs` | S2 |
+| `src/RushDay.Infrastructure/Caching/{CacheKeys,EnrolmentWindowCache,SettingsCache,LecturerModuleCache,PublicationCache}.cs`, `Accounts/**`, `Audit/{AuditWriter,IAuditContext,AuditHashes}.cs` | S2 |
 | `src/RushDay.Infrastructure/{Enrolments/EnrolmentService,Enrolments/EnrolmentWindowService}.cs`, `Queries/{Dashboard,Results,Timetable,MyEnrolments,ModuleDetail,StudentExport}Query.cs`, `Grades/GradeQueries.cs`, `Caching/{CatalogueCache,AnnouncementCache}.cs`, `Announcements/**` | S4 |
 | `src/RushDay.Infrastructure/{Grades/MarksService,Grades/ResultsPublicationService}.cs`, `Queries/{Roster,MarksSheet,AdminStudent,AdminResults,Audit,Overview}Query.cs`, `Modules/**`, `Settings/**`, `Enrolments/EnrolmentWindowAdminService.cs`, `Students/**`, `Lecturers/**`, `Audit/AuditCsvWriter.cs`, `Ops/**` | S6 |
 | `src/RushDay.Api/Program.cs`, `DatabaseOptions.cs` | S1 (one block) → S2 |
-| `src/RushDay.Api/{Startup,Options,Auth,Security,Observability,Hosting}/**`, `Endpoints/{Index,Health,Public,Auth}Endpoints.cs`, `Contracts/{Common,Auth,Public}.cs`, `appsettings*.json`, `Properties/launchSettings.json`, `.csproj`, `RushDay.Api.http` (first pass), `render.yaml` | S2 |
+| `src/RushDay.Api/{Startup,Options,Auth,Security,Observability,Hosting}/**` (except the S4/S6 hook files below), `Endpoints/{Index,Health,Public,Auth}Endpoints.cs`, `Contracts/{Common,Auth,Public}.cs`, `appsettings*.json`, `Properties/launchSettings.json`, `.csproj`, `RushDay.Api.http` (first pass), `render.yaml` | S2 |
 | `scripts/{run-api,reset-db,seed,db-create}.ps1` | S1R |
-| `src/RushDay.Api/Endpoints/{Me,Module,Announcement}Endpoints.cs`, `Contracts/{Dashboard,Modules,Enrolments,Announcements,Export}.cs` | S4 |
-| `src/RushDay.Api/Endpoints/{Lecturer,Admin*}Endpoints.cs`, `Contracts/{Lecturer,Admin*}.cs` | S6 |
-| `tests/RushDay.UnitTests/**` except `Observability/**`; the csproj except S2's two references | S1 → S1R |
-| `tests/RushDay.UnitTests/Observability/**`; the csproj's `RushDay.Api` and `Diagnostics.Testing` references | S2 |
-| `tests/RushDay.IntegrationTests/**` (factory, `TestClients`, `Auth`, `Security`, `Endpoints`) | S2 (S1 touched the factory) |
+| `src/RushDay.Api/Endpoints/{Me,Module,Announcement}Endpoints.cs`, `Contracts/{Dashboard,Modules,Enrolments,Announcements,Export}.cs`, `Startup/{ServiceRegistration,PipelineConfiguration}.Student.cs` (the S2 hooks) | S4 |
+| `src/RushDay.Api/Endpoints/{Lecturer,Admin*}Endpoints.cs`, `Contracts/{Lecturer,Admin*}.cs`, `Startup/{ServiceRegistration,PipelineConfiguration}.Staff.cs` (the S2 hooks) | S6 |
+| `tests/RushDay.UnitTests/**` except S2's folders; the csproj except S2's references | S1 → S1R |
+| `tests/RushDay.UnitTests/{Observability,Auth,Security,Contracts,Startup}/**`; the csproj's `RushDay.Api`, `Diagnostics.Testing` and `TimeProvider.Testing` references | S2 |
+| `tests/RushDay.IntegrationTests/**` (factory, `TestClients`, `Auth`, `Security`, `Endpoints`, `Caching`) | S2 (S1 touched the factory) |
 | `tests/RushDay.IntegrationTests/Persistence/**`, `Logging/**`, `Security/CsvInjectionTests.cs` | S11 |
 | `tests/RushDay.IntegrationTests/Student/**` | S4 |
 | `tests/RushDay.IntegrationTests/Staff/**` | S6 |

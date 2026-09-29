@@ -151,7 +151,18 @@ and typed entries; the L2 is simply not registered). Every entry is small (the c
 | `publications:brief` | `{ next: PublicationBrief \| null, latest: PublicationBrief \| null }` (earliest future `publish_at`; latest past) | 60 s | publish, reschedule, cancel, unpublish, return-to-draft |
 | `announcements:university` | visible university announcements | 30 s | admin announcement mutations, publish with `announce` |
 | `lecturer-modules:{lecturerId}` | module codes assigned | 60 s | `PUT /api/admin/modules/{code}/lecturers` |
-| `public-status` (OutputCache, named policy) | `GET /api/public/status` body | 10 s | time |
+| `public-status` (OutputCache, named policy `PublicStatusCachePolicy`) | `GET /api/public/status` body | 10 s | time |
+
+**Every cache factory opens its own context** (`await using var db = await contexts.CreateDbContextAsync(ct)` from
+the singleton `IDbContextFactory<RushDayDbContext>`, `Startup/RushDayDbContextFactory.cs`), never the caller's scoped
+`RushDayDbContext`. HybridCache runs one factory for every caller waiting on a key, and the caller whose request
+started it may end (client gone, timeout) and dispose its scope while the others still wait: with a borrowed context
+every waiter would get a 500 (`Connection is not open`, an `ObjectDisposedException`, a corrupted reader). This holds
+for S2's `SettingsCache`, `EnrolmentWindowCache`, `PublicationCache` and `LecturerModuleCache` and for S4's
+`CatalogueCache` and `AnnouncementCache` (`CacheFillTests.A_fill_survives_the_request_that_started_it`). The factory's
+options are built from the same registrations as the scoped context (connection string, snake-case names, the
+`DbCommandCounter` interceptor), on the root provider. Cache factories run inside `CacheFill` (the wrapper in
+`CacheKeys.GetOrCreateAsync`), so their commands are not counted as the request's own (section 6.1).
 
 Client side (`05-frontend.md` section 6): queries never refetch on window focus (20,000 tabs refocusing at 09:00 is a
 stampede), and when a results-day countdown reaches zero every open dashboard waits a random 0–30 s before its single
@@ -160,8 +171,10 @@ proves. Failed queries retry after `Retry-After` plus up to 1 s of random jitter
 
 Metric `rushday.cache.requests{cache, result=hit|miss}` is recorded by each cache wrapper. Authenticated responses
 are never output-cached (personal data, `Cache-Control: no-store`); `public-status` is the one named OutputCache
-policy, built with `excludeDefaultPolicy: true` so authenticated callers are served from it too (the response never
-varies by user and sets no cookie). Static assets are cached by fingerprint (`05-frontend.md` section 4).
+policy, a custom `IOutputCachePolicy` (`Endpoints/PublicEndpoints.cs`: GET and HEAD, 10 s, locking, never stored
+unless the response is a 200 without `Set-Cookie`) that does not include the default policy, so authenticated callers
+are served from it too (the response never varies by user and sets no cookie). Static assets are cached by
+fingerprint (`05-frontend.md` section 4).
 
 ## 5. Pool, timeouts and load shedding
 
@@ -176,6 +189,11 @@ varies by user and sets no cookie). Static assets are cached by fingerprint (`05
   `Keepalive=30` for long k6 runs. Neon's free compute allows about 112 connections; 20 leaves room for Neon's own
   tooling and a second deploy during Render's overlap window. Local PostgreSQL has `max_connections=100`; 40 is safe
   for load runs.
+- `Command Timeout=10` is the request path's. Every startup statement (migration on either connection, seed, backfills)
+  runs with `Database:StartupCommandTimeoutSeconds` (600) instead (`db.Database.SetCommandTimeout` on `StartupTasks`'
+  context and `CommandTimeout` on the migrations connection's options), because the grade backfill rewrites 80,000 rows
+  (2.3 s on the laptop) and on Neon's 0.25 CU could exceed 10 s, and a startup timeout aborts every restart
+  (`StartupTaskTests`).
 - Pool wait exhaustion surfaces as `NpgsqlException` (transient, inner `TimeoutException`) → 503 `server-busy` with
   `Retry-After: 2` in under 5 s, never as a 500, and increments `rushday.db.pool_wait_timeouts` (only for the
   `TimeoutException` case; a dead connection after a resume is a 503 without the metric). Zero Postgres 53300 errors
@@ -216,17 +234,28 @@ varies by user and sets no cookie). Static assets are cached by fingerprint (`05
 | `rushday.results.published` | Counter<long> | |
 
 `Observability/DbCommandCounter.cs` (S2): an EF `DbCommandInterceptor` registered on the `DbContext` that increments
-an `AsyncLocal<int>` for every command executed; `RequestLoggingMiddleware` resets it at the start of each request and
-`MeEndpoints.Dashboard` records its value into `rushday.dashboard.queries`. The number is measured, never a constant;
-`DashboardTests` asserts the metric equals 5 **and** counts 5 `Microsoft.EntityFrameworkCore.Database.Command` log
-entries at Information (the test factory raises that category to Information).
+an async-local box for every command the **endpoint** executes. `EndpointCommandCounterMiddleware`, the last middleware
+before the endpoint (after authentication, the rate limiter, authorization and the output cache), resets it, so the
+security-stamp re-check of the authentication step (four commands when due) is not counted; commands issued inside a
+cache factory (`CacheFill`, section 4) are skipped, so a request that happens to fill a cache is not charged for it.
+`MeEndpoints.Dashboard` records its value into `rushday.dashboard.queries`. The number is measured, never a constant
+(`RequestPipelineTests.Command_counter_counts_only_the_endpoint_queries`). `DashboardTests` asserts the metric equals 5
+**and** cross-checks the log: on a host from `factory.DeriveWithCommandLog()` (a derived host that raises
+`Microsoft.EntityFrameworkCore.Database.Command` to Information into a fake log collector; the main factory keeps it at
+Warning so the seed and the suite do not log every statement), it warms the caches with a first dashboard call, clears
+the collector, and counts 5 Information entries of that category for a second call made without moving the clock (so
+no stamp re-check and no cache fill runs during it).
 
 Built-in meters listened to: `Microsoft.AspNetCore.Hosting` (`http.server.request.duration` with
 `http.response.status_code`, `http.server.active_requests`), `Microsoft.AspNetCore.Server.Kestrel`
 (`kestrel.active_connections`, `kestrel.queued_connections`, `kestrel.rejected_connections`),
 `Microsoft.AspNetCore.RateLimiting` (`aspnetcore.rate_limiting.requests` with `aspnetcore.rate_limiting.result`),
-`Npgsql` (`db.client.connections.usage` with `state`, `db.client.connections.max`,
-`db.client.connections.pending_requests`, `db.client.connections.timeouts`).
+`Npgsql` 10, which follows the OpenTelemetry database conventions: `db.client.connection.count` (tag
+`db.client.connection.state` = `idle` | `used`, plus `db.client.connection.pool.name`), `db.client.connection.max`,
+`db.client.connection.npgsql.pending_requests` and `db.client.connection.npgsql.timeouts` (names read from
+the Npgsql 10 assembly). `MetricsSnapshotService` also reads the pre-10 names (`db.client.connections.usage` with
+`state`, `db.client.connections.max`, `db.client.connections.pending_requests`), so a driver downgrade does not blank
+the pool figures.
 
 ### 6.2 `MetricsSnapshotService` (hosted singleton)
 
@@ -237,8 +266,13 @@ p95 and p99 are interpolated. Observable gauges (pool usage, active requests) ar
 bucket's last value. Process facts (`Environment.WorkingSet`, `GC.GetTotalMemory(false)`,
 `ThreadPool.ThreadCount`) are read at snapshot time. **Data quality is refreshed by this service on a 60 s background
 timer** (two cheap queries on a scoped `DbContext` with `Command Timeout=2`: over-capacity modules; drift count between
-`enrolled_count` and current-year active enrolments), never per request; a failed refresh keeps the last value and sets
-`dataQuality.staleSince`. Bucketing is unit-tested in `tests/RushDay.UnitTests/Observability/` (S2).
+`enrolled_count` and current-year active enrolments; plus the backfill list), never per request, and **only while the
+snapshot is being polled**: the timer skips its queries unless `GET /api/admin/ops/metrics` was called within the last
+2 minutes (`PollingWindow`), because a query every minute would keep Neon's compute from ever suspending. The first
+poll after an idle spell starts a refresh at once (in the background: the request still touches no database), so
+`dataQuality.refreshedAt` is null or old in that first answer and current from the next 5-second poll on. A failed
+refresh keeps the last value and sets `dataQuality.staleSince`. Bucketing and the polling gate are unit-tested in
+`tests/RushDay.UnitTests/Observability/` (S2).
 
 ### 6.3 `OpsSnapshot` (`GET /api/admin/ops/metrics`)
 
@@ -263,7 +297,9 @@ OpsSnapshot {
 }
 ```
 
-Counters are totals since process start; `last60s` is computed from the last bucket. The route sits outside the
+Counters are totals since process start; `last60s` is the **last complete minute** (the minute so far during the
+process's first minute), and `perSecond` divides its requests by the seconds of that minute the process was actually
+up, so the first minute after a cold start mid-minute is not understated. The route sits outside the
 global concurrency limiter and behind a per-user token bucket (1 per 2 s) so the page keeps answering while every
 other request is being shed; it touches no database (data quality comes from the background refresh). The SPA polls
 every 5 s while the ops page is visible and keeps the last snapshot when a poll fails (`05-frontend.md`). The SPA
@@ -277,14 +313,21 @@ derives the plain-language health summary from `shed503`, `status5xx` and the `w
   the database is unreachable. It is inside the global concurrency limiter and under the `health-ready` policy (30
   per minute per address, 503 `server-busy` beyond) so an anonymous loop cannot hold the pool. The ops overview shows
   it as `database: 'ok' | 'degraded'`.
-- Startup (`Startup/StartupTasks.RunAsync`): demo guard (`Demo:Enabled` in Production requires
-  `Demo:PublicDemoAcknowledged`, else abort; with it, a Warning every start) → KEK check (Production without
-  `DataProtection:KeyEncryptionKey` aborts) → migrate (on `ConnectionStrings:Migrations` when set) → seed **only in demo
-  mode or under `--migrate-and-seed`** → backfills, each logged with elapsed time; a failure aborts startup so Render
-  keeps the previous instance running (its deploy health check never passes). Under `--migrate-and-seed` the process
-  exits after the backfills.
-- Logging: JSON console in Production with `traceId`, `userId`, `role`, `route`, `statusCode`, `elapsedMs` per request
-  (`Startup/RequestLoggingMiddleware.cs`, one line per request at Information; health checks at Debug).
+- Startup (`Startup/StartupTasks.RunAsync`): demo guard (`Demo:Enabled` in any environment but Development requires
+  `Demo:PublicDemoAcknowledged`, else abort; with it, a Warning every start) → KEK check (outside Development, no
+  `DataProtection:KeyEncryptionKey` aborts; the host-filtering and forwarded-headers Warnings are logged here too) →
+  migrate (on `ConnectionStrings:Migrations` when set) → key-ring check outside Development (plaintext keys revoked, an
+  encrypted default key ensured; `03-security.md` T18) → seed **only in demo mode or under `--migrate-and-seed`** →
+  backfills, each logged with elapsed time and every statement under `Database:StartupCommandTimeoutSeconds` (section
+  5); a failure aborts startup so Render keeps the previous instance running (its deploy health check never passes).
+  `Database:MigrateOnStartup` and `Database:BackfillOnStartup` default to true outside Development (`render.yaml` sets
+  both anyway). Under `--migrate-and-seed` the process exits after the backfills.
+- Logging: JSON console in Production (no scopes, `03-security.md` section 6) with `traceId`, `userId`, `role`,
+  `route`, `statusCode`, `elapsedMs` per request (`Startup/RequestLoggingMiddleware.cs`, one line per request at
+  Information; health checks at Debug). The middleware sits outside `UseExceptionHandler`, so `statusCode` is what the
+  client received (503 for a transient database failure, 499 for an abandoned request, 500 only for a real failure;
+  `RequestPipelineTests.Request_log_records_the_status_the_client_received`), and it takes the route template recorded
+  before the endpoint ran, since the exception handler clears the endpoint.
 
 ## 8. k6 changes (`load/k6`)
 
@@ -317,7 +360,7 @@ send an explicit `Cookie` header because k6's per-VU jar does not carry setup co
 | `login-storm.js` (new) | Two modes via `-e MODE=guard` (default) and `-e MODE=spray`. **guard**: ramping arrival rate 5 → 40 logins/s over 2 minutes against `POST /api/auth/login` with a fresh csrf per iteration and a **distinct username per iteration** (`'S' + String(1 + Math.floor(Math.random() * 20000)).padStart(6, '0')`, so the per-user window never trips); counts 200 / 401 / 429; records p95 per stage. Run against the production-strength CPU guard (section 9 step 5). **spray**: from one synthetic address (`X-Forwarded-For: 203.0.113.10`, honoured because Development trusts forwarded headers) sends wrong passwords for 500 distinct usernames, expects 429 after `LoginFailuresPerIpPer10Minutes` failures, then a correct login for `S000001` from `203.0.113.11` and asserts 200 (nobody was locked). Requires `RateLimiting__LoginFailuresPerIpPer10Minutes=20` for the run. |
 | `load/results/runs.json` (new) | `[{ file, scenario, version: 'v0' \| 'v1', label, ranAt, targetRate?, mode?, notes }]` maintained by hand for every committed summary. |
 | `load/summarize.mjs` (new) | Reads `runs.json` and each summary, writes `src/RushDay.Web/public/data/load-results.json` (`05-frontend.md` section 8); `p99Ms` is optional for **every** run and emitted only when `metrics.http_req_duration['p(99)']` exists (the committed v0 enrolment-rush and results-day summaries lack it); `--check` exits non-zero when the committed JSON differs (CI). |
-| `scripts/load.ps1` | adds `login-storm`, `-Rushers`, `-LoginPool`, `-Mode` and a `-ProductionLoginGuard` switch that prints and sets `RateLimiting__LoginConcurrency=8 RateLimiting__LoginQueue=64 RateLimiting__LoginPerIpPerMinute=100000 RateLimiting__LoginPerUserPerMinute=100000 RateLimiting__LoginFailuresPerIpPer10Minutes=100000` for the API it launches through `scripts/run-api.ps1`; unchanged file naming. |
+| `scripts/load.ps1` | adds `login-storm`, `-Rushers`, `-LoginPool`, `-Mode` and a `-ProductionLoginGuard` switch that prints and sets `RateLimiting__LoginConcurrency=8 RateLimiting__LoginQueue=16 RateLimiting__LoginPerIpPerMinute=100000 RateLimiting__LoginPerUserPerMinute=100000 RateLimiting__LoginFailuresPerIpPer10Minutes=100000` for the API it launches through `scripts/run-api.ps1`; unchanged file naming. |
 | `load/README.md` | updated for authentication, the relaxed Development limits, `run-api.ps1`, the two login-storm modes and their environment variables. |
 
 Development `appsettings.Development.json` carries the `RateLimiting` values from `03-security.md` section 8 and
@@ -337,7 +380,7 @@ API is always started with `scripts/run-api.ps1` (never `dotnet run`).
 4. `scripts/load.ps1 dashboard-knee -Rate 1000`, `2000`, `3000`, `4000` → table of achieved rate, p50/p95/p99,
    `shed_503`, `dropped_iterations`; API log grep for `53300` empty.
 5. `scripts/load.ps1 login-storm -ProductionLoginGuard` (restarts the API with
-   `RateLimiting__LoginConcurrency=8 RateLimiting__LoginQueue=64 RateLimiting__LoginPerIpPerMinute=100000
+   `RateLimiting__LoginConcurrency=8 RateLimiting__LoginQueue=16 RateLimiting__LoginPerIpPerMinute=100000
    RateLimiting__LoginPerUserPerMinute=100000 RateLimiting__LoginFailuresPerIpPer10Minutes=100000`, i.e. only the CPU
    guard at production strength) → 200/401/429 counts and p95 at each stage; then `scripts/load.ps1 login-storm -Mode spray`
    with `RateLimiting__LoginFailuresPerIpPer10Minutes=20` → the 429 onset and the successful login from the second

@@ -13,12 +13,21 @@ D4–D6, D13, D15–D17, D25 and D27–D32 of `00-overview.md` apply. Data shape
   `"mark" | "absent" | "deferred"`, `day` is `"monday"`..; nulls are emitted (`DefaultIgnoreCondition = Never`) so
   shapes are stable; `MaxDepth = 16`; unknown members ignored. Role names are the Identity strings
   `"Student" | "Lecturer" | "Admin"`.
-- Instants are ISO-8601 UTC (`2026-09-28T09:00:00Z`); times of day `"HH:mm"`; ids are UUID strings.
+- Instants are ISO-8601 UTC written with exactly three fractional digits (`2026-09-28T09:00:00.000Z`,
+  `UtcDateTimeOffsetJsonConverter`); times of day `"HH:mm"`; ids are UUID strings. An instant in a request body must be a
+  JSON string in ISO-8601 extended form (`yyyy-MM-ddTHH:mm:ss`, an optional fraction of up to seven digits, then `Z`, an
+  offset or nothing for UTC), parsed with the invariant culture and normalised to UTC; any other token or text
+  (`"not-a-date"`, `"28/09/2026 09:00"`, a number) is 400 `validation`.
 - Paged responses: `{ items: T[], page: number, pageSize: number, total: number }`; `page` starts at 1;
   `pageSize` is clamped to 1..100 (roster and audit allow up to 200; marks up to 500).
 - Request validation: .NET 10 minimal API validation (`builder.Services.AddValidation()`) with DataAnnotations on
   request records. Invalid input → 400 `HttpValidationProblemDetails`, `type = urn:rushday:validation`, `errors`
   keyed by camelCase property. Every free-text query parameter (`q`, `actor`, `action`) carries `[StringLength(100)]`.
+  A body that does not bind (malformed JSON, a wrong JSON type, an empty body) is 400 `validation` in every
+  environment: `RouteHandlerOptions.ThrowOnBadRequest = false`, so Development does not turn it into a 500
+  (`ProblemTypesTests.Unbindable_bodies_are_validation_problems`). Binding and validation run before the endpoint
+  filters, so a malformed or invalid request answers 400 `validation` even without a valid antiforgery token or while a
+  gate (section 2.3) would refuse it; neither discloses anything, and the filters still guard every request that binds.
 - Query parameters holding a semester (`GET /api/admin/results`) are bound through a `SemesterQuery` record with
   `[RegularExpression("^(?i)(autumn|spring)$")]`: `autumn` or `spring`, case-insensitive, numeric values rejected with
   400 `validation`. JSON bodies use the enum converter (`"autumn" | "spring"`).
@@ -56,11 +65,11 @@ services.AddIdentityCore<ApplicationUser>(o =>
 .AddRoles<IdentityRole<Guid>>()
 .AddEntityFrameworkStores<RushDayDbContext>()
 .AddSignInManager()
-.AddTokenProvider<AuthenticatorTokenProvider<ApplicationUser>>(TokenOptions.DefaultAuthenticatorProvider) // TOTP only; no email/phone providers
+.AddTokenProvider<ReplayProtectedAuthenticatorTokenProvider>(TokenOptions.DefaultAuthenticatorProvider) // TOTP only (no email/phone providers); section 2.4
 .AddPasswordValidator<RushDayPasswordValidator>()
 .AddClaimsPrincipalFactory<RushDayClaimsPrincipalFactory>();
 services.Configure<PasswordHasherOptions>(o => o.IterationCount = 210_000);
-services.AddScoped<ISecurityStampValidator, RushDaySecurityStampValidator>(); // rejects disabled and locked-out users at each interval
+services.AddScoped<ISecurityStampValidator, RushDaySecurityStampValidator>(); // interval from the svt claim; rejects disabled and locked-out users
 
 var cookiePrefix = env.IsDevelopment() ? "" : "__Host-";   // Secure, Path=/ and no Domain already hold, so the prefix is free
 var securePolicy = env.IsDevelopment() ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
@@ -82,7 +91,9 @@ services.Configure<CookieAuthenticationOptions>(IdentityConstants.TwoFactorUserI
 {
     o.Cookie.Name = cookiePrefix + "rushday.mfa";                          // set between password and code, 5 minutes
     o.Cookie.HttpOnly = true; o.Cookie.SameSite = SameSiteMode.Strict; o.Cookie.SecurePolicy = securePolicy; o.Cookie.Path = "/";
-    o.ExpireTimeSpan = TimeSpan.FromMinutes(auth.MfaCookieMinutes);       // 5
+    o.ExpireTimeSpan = TimeSpan.FromMinutes(auth.MfaCookieMinutes);       // 5, from the password step
+    o.SlidingExpiration = false;                                          // verify calls never extend the challenge
+    o.Events.OnSigningIn = MfaChallengeBinding.OnSigningInAsync;          // binds the challenge to the security stamp
 });
 services.Configure<SecurityStampValidatorOptions>(o =>
 {
@@ -112,19 +123,28 @@ typeof(AesGcmXmlDecryptor))`; the decryptor takes `DataProtectionKeyEncryptionKe
 plain keys. Losing the variable invalidates every session and antiforgery token and nothing else; the generation
 command lives in `docs/deployment.md` (`06-implementation-plan.md` S11).
 
-**Lifetimes** (`Auth/RushDayCookieEvents.cs`, `ValidateAsync`): the principal carries `iat` (sign-in instant) and
-`las` (last activity), both Unix seconds. Per role: `Student` and `Lecturer` get `Auth:SessionSlidingHours` (8) and
-`Auth:SessionAbsoluteHours` (12); `Admin` gets `Auth:AdminSessionSlidingMinutes` (60) and `Auth:AdminSessionAbsoluteHours`
-(8). `ValidateAsync`: (1) reject the principal (`RejectPrincipal()` + `SignOutAsync`) when `now - iat > absolute` or
-`now - las > sliding`; (2) delegate to `ISecurityStampValidator.ValidateAsync`, which every
-`SecurityStampIntervalMinutes` re-reads the user (one primary-key read per active session), rejects when the security
-stamp changed (password change, reset, lock, disable, logout) and, through `RushDaySecurityStampValidator.VerifySecurityStamp`
-returning null, when `disabled_at IS NOT NULL` or `lockout_end > now` (so an automatic lockout also ends existing
-sessions: `AuthTests.Locked_out_user_session_dies_after_validation_interval`); when the validator re-issues the
-principal, `CopyLifetimeClaims` keeps the original `iat` and `las` (the factory would stamp a fresh `iat`, which must
-not restart the absolute clock); (3) when `now - las > 60 s`, replace the principal with one whose `las` is `now`
-and set `ShouldRenew`. Password change calls `UpdateSecurityStampAsync` then `RefreshSignInAsync` so the current session
-survives and every other session dies at its next validation.
+**Lifetimes** (`Auth/RushDayCookieEvents.cs`, `ValidateAsync`): the principal carries `iat` (sign-in instant),
+`las` (last activity) and `svt` (last security-stamp check), all Unix seconds. Per role: `Student` and `Lecturer` get
+`Auth:SessionSlidingHours` (8) and `Auth:SessionAbsoluteHours` (12); `Admin` gets `Auth:AdminSessionSlidingMinutes` (60)
+and `Auth:AdminSessionAbsoluteHours` (8). `ValidateAsync`: (1) reject the principal (`RejectPrincipal()` +
+`SignOutAsync`) when `now - iat > absolute` or `now - las > sliding`; (2) delegate to `ISecurityStampValidator.ValidateAsync`
+(`RushDaySecurityStampValidator`), which is due when `now - svt > SecurityStampIntervalMinutes` (falling back to `iat`
+when `svt` is missing) and then re-reads the user (one primary-key read per active session), rejects when the
+security stamp changed (password change, reset, lock, disable, logout) and, through `VerifySecurityStamp` returning
+null, when `disabled_at IS NOT NULL` or `lockout_end > now` (so an automatic lockout also ends existing sessions:
+`AuthTests.Locked_out_user_session_dies_after_validation_interval`); on success it re-issues the principal with
+`svt = now`. The interval is **never** measured from the ticket's `IssuedUtc`, as Identity's own validator does: step 3
+renews the cookie (and so resets `IssuedUtc`) every minute of activity, which would postpone the check forever for a
+session used at least every five minutes, leaving disable, lock, reset and logout effective only on idle sessions
+(`SessionHardeningTests.Active_session_of_a_disabled_user_ends_within_the_interval`,
+`SessionHardeningTests.Renewed_cookie_replayed_after_logout_is_rejected_within_the_interval`, both at the real 5-minute
+interval). `iat` is preserved on every re-issue: `CopyLifetimeClaims` keeps the original `iat` and `las` when the
+validator re-issues the principal (the factory would stamp a fresh `iat`, which must not restart the absolute clock),
+and the factory itself keeps the current principal's `iat` when the same user is re-issued within a request
+(`RefreshSignInAsync` after a password change or enabling MFA); (3) when `now - las > 60 s`, replace the principal
+with one whose `las` is `now` (every other claim, `svt` included, unchanged) and set `ShouldRenew`. Password change
+calls `UpdateSecurityStampAsync` then `RefreshSignInAsync` so the current session survives and every other session
+dies at its next validation.
 
 ### 2.2 Claims (issued by `RushDayClaimsPrincipalFactory`)
 
@@ -141,6 +161,7 @@ survives and every other session dies at its next validation.
 | `mfa` | `1` | when `two_factor_enabled` |
 | `demo` | `1` | when `is_demo` |
 | `iat`, `las` | Unix seconds at sign-in / last activity | all (preserved across re-issue, section 2.1) |
+| `svt` | Unix seconds of the last security-stamp check (sign-in, then every successful re-check) | all (section 2.1) |
 
 Ownership checks read claims (`CurrentUser` accessor wraps them); route values are never trusted for identity.
 The factory always returns a principal; disabled, locked-out and demo-disabled users are rejected by
@@ -150,28 +171,38 @@ The factory always returns a principal; disabled, locked-out and demo-disabled u
 
 `POST /api/auth/login` (`AuthEndpoints.Login`), in this order:
 
-1. Antiforgery (group filter) and the named `login` policy (per client IP, section 5) have already run.
-2. `LoginThrottle.TryAcquire(normalisedUsername, clientIp)`: the per-username window and the per-IP `login-failures`
-   window (failed outcomes only). Either exhausted → 429 `rate-limited` with `Retry-After`, metric
-   `rushday.load_shed.rejected{policy=login}`; nothing else is touched.
+1. Antiforgery (group filter) and the named `login` policy (per client address, section 5) have already run.
+2. `LoginThrottle.TryBegin(normalisedUsername, clientKey)`: reserves one permit in the per-address `login-failures`
+   window and one in the per-username window, both of which count **failed outcomes only** by reserve-then-refund:
+   the permits are taken before any work and handed back when the attempt succeeds (a right password, including the
+   `mfaRequired` answer) or ends without an outcome (the CPU guard sheds it, an exception), so concurrent attempts can
+   never overrun a window and a user's own successful sign-ins never spend it. Either window exhausted → 429
+   `rate-limited` with `Retry-After`, metric `rushday.load_shed.rejected{policy=login}`; nothing else is touched, the
+   password is not checked. `clientKey` is `RateLimitPolicies.ClientKey`: the IPv4 address (an IPv4-mapped IPv6 address
+   in its IPv4 form), or a native IPv6 address truncated to its /64, because one host or subscriber routinely holds a
+   whole /64; the full address is used only for the keyed `ipHash` of logs and audit rows.
 3. `user = FindByNameAsync(username)`. When `user` is null, or `disabled_at IS NOT NULL`, or `user.IsDemo && !demo.Enabled`:
    run `PasswordHasher.VerifyHashedPassword(DummyUser, DummyHash, password)` so timing matches, record a failure in
    `LoginThrottle` (step 5), answer 401 `invalid-credentials`.
 4. Acquire the CPU guard (`LoginThrottle.Cpu`, a `ConcurrencyLimiter`; exhausted → 429, `Retry-After: 2`) around
-   `SignInManager.PasswordSignInAsync(user, password, isPersistent: false, lockoutOnFailure: false)`.
+   `SignInManager.PasswordSignInAsync(user, password, isPersistent: false, lockoutOnFailure: false)` or the dummy verify
+   of step 3, and release it as soon as that returns: failure accounting and the success completion (database round
+   trips) run outside it (`LoginProtectionTests.Cpu_guard_is_released_before_the_sign_in_completes`).
    - `IsLockedOut` → run the dummy hash too (a locked account must not answer faster than a wrong password), then 401.
    - `RequiresTwoFactor` → Identity has set the `rushday.mfa` cookie; answer 200 `{ mfaRequired: true, csrfToken }`
      (`IAntiforgery.GetAndStoreTokens` for the anonymous identity). No claims are issued yet.
    - `Succeeded` → step 6.
    - otherwise (wrong password) → step 5, then 401.
-5. Failure accounting (`LoginThrottle.RecordFailure(usernameHash, ipHash)`): a bounded in-process map of
-   (`usernameHash`, `ipHash`) → count within a 15-minute window (at most 50,000 entries, oldest evicted). When the user
-   exists, is not `is_demo`, and the number of **distinct** `ipHash` values seen for that `usernameHash` in the window is
-   at least `RateLimiting:LockoutDistinctIps` (3), call `UserManager.AccessFailedAsync(user)`; if that locks the
-   account, audit `auth.locked_out { usernameHash, failedCount, ipHash }` and increment `rushday.auth.lockouts`.
-   Single-address attacks never reach `AccessFailedAsync`: the per-IP `login-failures` window (20 per 10 minutes)
-   answers 429 first. Demo accounts are never counted toward lockout (their password is public; the per-username
-   window still applies). Log line: `outcome`, `usernameHash`, `ipHash` only.
+5. Failure accounting (`LoginThrottle.RecordFailure(usernameHash, clientKey)`; the attempt keeps its window permits): a
+   bounded in-process map of (`usernameHash`, `clientKey`) → last failure within a 15-minute window (at most 50,000
+   entries, oldest evicted). When the user exists, is not `is_demo`, and the number of **distinct** client keys seen for
+   that `usernameHash` in the window is at least `RateLimiting:LockoutDistinctIps` (3), call
+   `UserManager.AccessFailedAsync(user)`; if that locks the account, audit `auth.locked_out { usernameHash, failedCount,
+   ipHash }` and increment `rushday.auth.lockouts`. Single-address attacks never reach `AccessFailedAsync`: the
+   per-address `login-failures` window (20 per 10 minutes) answers 429 first, and addresses within one IPv6 /64 are one
+   address (`LoginProtectionTests.Addresses_in_one_ipv6_64_count_as_one_for_lockout`). Demo accounts are never counted
+   toward lockout (their password is public; the per-username window still applies). Log line: `outcome`,
+   `usernameHash`, `ipHash` only.
 6. Success completion (shared with `POST /api/auth/mfa/verify`): `ResetAccessFailedCountAsync`, `last_login_at = now`,
    set `HttpContext.User` to the new principal, `IAntiforgery.GetAndStoreTokens(HttpContext)` so the returned
    `csrfToken` is bound to the signed-in identity, return `Me`. Metrics `rushday.auth.logins{outcome=success|failed|locked_out|mfa_required}`.
@@ -182,35 +213,57 @@ Wrong password, locked out, unknown user, disabled user and demo-disabled user a
 `AuthTests.Demo_account_cannot_sign_in_when_demo_disabled`).
 
 - `POST /api/auth/logout`: `UpdateSecurityStampAsync(user)` then `SignOutAsync(IdentityConstants.ApplicationScheme)`
-  → 204. The browser cookie is deleted and any copy of it is rejected at the next validation, which also ends the
-  account's sessions on other devices (the account page says so). The SPA then fetches a fresh anonymous token from
-  `/api/auth/csrf`. Test `AuthTests.Cookie_replayed_after_logout_is_rejected`.
+  and `SignOutAsync(IdentityConstants.TwoFactorUserIdScheme)` → 204. The browser cookie is deleted and any copy of it
+  is rejected at the next validation, at most `SecurityStampIntervalMinutes` after the copy's session was last checked,
+  however often the copy was renewed (section 2.1); this also ends the account's sessions on other devices (the account
+  page says so). The SPA then fetches a fresh anonymous token from `/api/auth/csrf`. Tests
+  `AuthTests.Cookie_replayed_after_logout_is_rejected`, `SessionHardeningTests.Renewed_cookie_replayed_after_logout_is_rejected_within_the_interval`.
 - `POST /api/auth/change-password` (`login` CPU guard plus the `password-change` limiter, section 5): 409
   `demo-account` when `is_demo`; 400 `weak-password` (`errors.newPassword = ["same-as-current"]`) when `newPassword`
-  equals `currentPassword`; `ChangePasswordAsync` (on `PasswordMismatch`: `UserManager.AccessFailedAsync` so lockout
-  applies, then 400 `invalid-current-password`; 400 `weak-password` with `errors.newPassword[]` when policy fails),
-  clear `must_change_password`, `RefreshSignInAsync`, audit `auth.password_changed { forced }` → 204.
+  equals `currentPassword`; 400 `invalid-current-password` without checking anything when the account is locked out
+  (a session outlives its lockout until the next stamp check and must not keep guessing); `ChangePasswordAsync` (on
+  `PasswordMismatch`: `UserManager.AccessFailedAsync` so lockout applies, and when that locks the account audit
+  `auth.locked_out { usernameHash, failedCount, ipHash }` in the same transaction and increment
+  `rushday.auth.lockouts`; then 400 `invalid-current-password`; 400 `weak-password` with `errors.newPassword[]` when
+  policy fails), clear `must_change_password`, `RefreshSignInAsync`, sign out the `TwoFactorUserId` scheme, audit
+  `auth.password_changed { forced }` → 204 (`SessionHardeningTests.Change_password_lockout_is_audited_and_stops_further_guesses`).
 - `MustChangePasswordFilter` and `MfaSetupRequiredFilter` (endpoint filters on the `/api` group, in that order): each
   is skipped when the endpoint carries `IAllowAnonymous` metadata (so `GET /api`, `/api/public/*`, `/api/health/*`,
   `/api/openapi/*`, `/api/auth/csrf`, `/api/auth/login`, `/api/auth/mfa/verify` and the fallbacks are unaffected) or the
   route is `GET /api/auth/me`, `POST /api/auth/logout` or `POST /api/auth/change-password`. Otherwise, a principal with
   `pwd_change=1` receives 403 `password-change-required`; then a principal with `mfa_setup=1` receives 403
   `mfa-setup-required` unless the route is under `/api/auth/mfa/`. Tests `AuthTests.Must_change_user_can_read_public_status`,
-  `AuthTests.Admin_without_mfa_is_gated`.
+  `AuthTests.Admin_without_mfa_is_gated`. Like antiforgery (section 3) the gates are endpoint filters, so binding and
+  validation run before them: a gated principal sending an invalid body gets 400 `validation`, not the 403 of the gate.
 - No self-service reset (no email channel). Administrators reset via `POST /api/admin/accounts/{id}/reset-password`.
 - `POST /api/auth/register` does not exist and `MapIdentityApi` is never called; the `/api/{**rest}` fallback is
   `AllowAnonymous`, so the route answers 404 `not-found` as ProblemDetails without a session.
 
 ### 2.4 Second factor (TOTP; the `/api/auth/mfa` group mapped in `Endpoints/AuthEndpoints.cs`)
 
-Identity's `AuthenticatorTokenProvider` (RFC 6238, 30-second steps, 6 digits, ±1 step tolerance) and the
-`TwoFactorUserId` cookie scheme that `AddIdentityCookies()` registers. No email or SMS channel is needed.
+`Auth/ReplayProtectedAuthenticatorTokenProvider`, registered as `TokenOptions.DefaultAuthenticatorProvider`: RFC 6238
+(SHA-1, 30-second steps, 6 digits) over the key Identity stores (`GetAuthenticatorKeyAsync`), accepting ±2 steps
+(about 90 s of skew either way) exactly like Identity's `AuthenticatorTokenProvider`, against the **real** clock (the
+code comes from the user's phone; a test's fake clock never moves it). Unlike Identity's provider it records the last
+accepted time step per user (`user_tokens` row `[RushDay]` / `LastTotpStep`, claimed by one atomic
+`INSERT … ON CONFLICT … DO UPDATE … WHERE value < @step`) and refuses any step at or before it, so a code seen once
+(shoulder-surfed, phished, replayed from a proxy log) signs nobody in, on `verify` and `enable` alike, and two
+concurrent requests with one code cannot both pass (`SessionHardeningTests.Totp_code_is_refused_on_second_use`,
+`SessionHardeningTests.Authenticator_provider_accepts_each_time_step_once`). The `TwoFactorUserId` cookie scheme that
+`AddIdentityCookies()` registers carries the user between the password and the code: it lives exactly
+`Auth:MfaCookieMinutes` (5) from the password step (`SlidingExpiration = false`, so verify calls never extend it) and
+carries the account's security stamp at the password step (`MfaChallengeBinding`, set in the scheme's `OnSigningIn`);
+`verify` answers 401 `invalid-credentials` and drops the cookie when the stamp has changed since (a password reset or
+change, an MFA reset, a lock or disable) (`SessionHardeningTests.Mfa_challenge_expires_five_minutes_after_the_password_step`,
+`SessionHardeningTests.Password_reset_invalidates_an_outstanding_mfa_challenge`). Logout and a password change also sign
+the scheme out. No email or SMS channel is needed. Students never enrol a factor (D27): `setup` and `enable` answer 403
+`forbidden` for the `Student` role (`SessionHardeningTests.Students_cannot_enrol_a_second_factor`).
 
 | Method and route | Auth | Request | Response | Codes |
 |---|---|---|---|---|
-| `POST /api/auth/mfa/setup` | authenticated (allowed while `mfa_setup=1`) | | `{ sharedKey: string (base32, grouped in fours), otpauthUri: string }` (`ResetAuthenticatorKeyAsync` then `GetAuthenticatorKeyAsync`; issuer `Branding:InstitutionShortName`, label the username); audit `account.mfa_setup_started` | 200; 409 `demo-account` (`is_demo`); 409 `mfa-already-enabled` when `two_factor_enabled` |
-| `POST /api/auth/mfa/enable` | authenticated | `{ code: /^\d{6}$/ }` | `Me` (fresh claims via `RefreshSignInAsync`: `mfa=1`, no `mfa_setup`); `VerifyTwoFactorTokenAsync` then `SetTwoFactorEnabledAsync(true)`; audit `account.mfa_enabled` | 200; 400 `invalid-mfa-code`; 409 `demo-account`, `mfa-already-enabled` |
-| `POST /api/auth/mfa/verify` | anonymous route (`AllowAnonymous`) + the `rushday.mfa` cookie; `login` policy and `LoginThrottle` windows apply | `{ code: /^\d{6}$/ }` | `Me`; `SignInManager.TwoFactorAuthenticatorSignInAsync(code, isPersistent: false, rememberClient: false)`, then the success completion of section 2.3 step 6 | 200; 401 `invalid-credentials` (wrong code, expired or missing cookie; Identity counts a wrong code as an access failure, so lockout applies after 5) |
+| `POST /api/auth/mfa/setup` | authenticated staff (allowed while `mfa_setup=1`) | | `{ sharedKey: string (base32, grouped in fours), otpauthUri: string }` (`ResetAuthenticatorKeyAsync` then `GetAuthenticatorKeyAsync`; issuer `Branding:InstitutionShortName`, label the username); audit `account.mfa_setup_started` | 200; 403 `forbidden` (role `Student`); 409 `demo-account` (`is_demo`); 409 `mfa-already-enabled` when `two_factor_enabled` |
+| `POST /api/auth/mfa/enable` | authenticated staff | `{ code: /^\d{6}$/ }` | `Me` (fresh claims via `RefreshSignInAsync`: `mfa=1`, no `mfa_setup`); `VerifyTwoFactorTokenAsync` (a step not used before) then `SetTwoFactorEnabledAsync(true)`; audit `account.mfa_enabled` | 200; 400 `invalid-mfa-code`; 403 `forbidden` (role `Student`); 409 `demo-account`, `mfa-already-enabled` |
+| `POST /api/auth/mfa/verify` | anonymous route (`AllowAnonymous`) + the `rushday.mfa` cookie; `login` policy and `LoginThrottle` windows apply | `{ code: /^\d{6}$/ }` | `Me`; the challenge's stamp must still be the account's, then `SignInManager.TwoFactorAuthenticatorSignInAsync(code, isPersistent: false, rememberClient: false)`, then the success completion of section 2.3 step 6 | 200; 401 `invalid-credentials` (wrong or already-used code, expired or missing cookie, a stamp that changed since the password step; Identity counts a wrong code as an access failure, so lockout applies after 5) |
 | Should: `POST /api/auth/mfa/recovery-codes` | authenticated, `mfa=1` | | `{ codes: string[10] }` shown once (`GenerateNewTwoFactorRecoveryCodesAsync`); `POST /api/auth/mfa/verify` accepts `{ recoveryCode }` as an alternative | 200 |
 
 `Auth:RequireMfaForRoles` (default `["Admin"]`): a user in a listed role whose `two_factor_enabled` is false signs in
@@ -220,7 +273,7 @@ administrator is usable out of the box; it can never enable a factor, so the dem
 An administrator resets another account's factor with `POST /api/admin/accounts/{id}/reset-mfa` (section 8.5), after
 which the user is gated again at the next request. Test `AuthTests.Mfa_login_round_trip` (provision a non-demo
 administrator, setup, enable with a code computed by the test's RFC 6238 helper from `sharedKey`, logout, login →
-`mfaRequired`, verify → `Me`; a wrong code → 401).
+`mfaRequired`, verify → `Me` with the code of a later step than enable used (`Totp.FreshCode`); a wrong code → 401).
 
 ## 3. Antiforgery
 
@@ -239,7 +292,10 @@ services.AddAntiforgery(o =>
 
 - `AntiforgeryEndpointFilter` on the whole `/api` group calls `IAntiforgery.ValidateRequestAsync` for POST, PUT,
   PATCH and DELETE. Failure → 400 `urn:rushday:antiforgery`. No exemptions: login and MFA verify are protected too
-  (login CSRF).
+  (login CSRF). It is an endpoint filter, so body binding and request validation (section 1) run first: a request
+  whose body does not bind or validate answers 400 `validation` whether or not its token is valid. That order is
+  accepted: the answer reveals nothing and changes nothing, and every request that reaches a handler has passed the
+  filter.
 - The request token is delivered only in JSON bodies: `GET /api/auth/csrf` (anonymous), `POST /api/auth/login`
   (both response shapes), `POST /api/auth/mfa/verify` and `GET /api/auth/me` (`csrfToken` field). Tokens are bound to
   the principal, so the SPA refreshes after login, MFA verification and logout; on a 400 `antiforgery` it refreshes
@@ -280,26 +336,34 @@ There is no `Staff` policy. Structural rules that make cross-tenant reads imposs
 variable; Development values are relaxed so k6 can authenticate hundreds of students from one machine. ASP.NET's
 `RequireRateLimiting(name)` accepts one named policy partitioned on one key, and `PartitionedRateLimiter.CreateChained`
 is usable only as the global limiter, so the login protection is split between one named policy on the endpoint and
-`Auth/LoginThrottle.cs`, a singleton injected into `AuthEndpoints.Login` and `MfaVerify` that owns three in-process
-limiters.
+`Auth/LoginThrottle.cs`, a singleton injected into `AuthEndpoints.Login` and `MfaVerify` that owns two in-process
+"failed outcomes only" windows (`Auth/SlidingWindowCounter.cs`, a segmented sliding window whose permits can be
+refunded, which `System.Threading.RateLimiting` cannot do) and the CPU guard. Every per-address key is
+`RateLimitPolicies.ClientKey`: the client address after `ForwardedHeaders`, IPv4 as is (an IPv4-mapped IPv6 address in
+its IPv4 form), native IPv6 truncated to its /64 (a single host or subscriber routinely holds a whole /64).
 
 | Policy | Where | Partition key | Limiter | Production | Development | Rejection |
 |---|---|---|---|---|---|---|
 | global | every `/api` route **except** `/api/health/live` and `/api/admin/ops/metrics` | single | Concurrency, `OldestFirst` | permit 24, queue 96 | permit 64, queue **1,024** (deliberately larger than the 500-VU rush so `enrolment-rush.js` shows 30/470, not 503s) | 503 `server-busy`, `Retry-After: 1`, metric `rushday.load_shed.rejected{policy=api}` |
-| `login` (named policy, `RequireRateLimiting`) | `POST /api/auth/login`, `POST /api/auth/mfa/verify` | client IP after `ForwardedHeaders` | Sliding window 60 s, 6 segments | `LoginPerIpPerMinute` 600 | 100,000 | 429 `rate-limited`, `Retry-After` from the lease |
-| `login-failures` (`LoginThrottle`) | same handlers, checked before any lookup, **counts failed outcomes only** | client IP | Sliding window 10 min, 10 segments | `LoginFailuresPerIpPer10Minutes` 20 | 100,000 | 429, `Retry-After` |
-| per-username (`LoginThrottle`) | same handlers | normalised username from the body (or the MFA cookie's user) | Sliding window 60 s, 6 segments | `LoginPerUserPerMinute` 10 | 100,000 | 429, `Retry-After` |
-| CPU guard (`LoginThrottle.Cpu`) | around `PasswordSignInAsync`, the dummy hash and `ChangePasswordAsync` | single | `ConcurrencyLimiter(permit = LoginConcurrency, queue = LoginQueue, OldestFirst)` | 8 / 64 | 64 / 512 | 429 `rate-limited`, `Retry-After: 2`, metric `rushday.load_shed.rejected{policy=login}` |
+| `login` (named policy, `RequireRateLimiting`) | `POST /api/auth/login`, `POST /api/auth/mfa/verify` | client address key | Sliding window 60 s, 6 segments | `LoginPerIpPerMinute` 600 | 100,000 | 429 `rate-limited`, `Retry-After` from the lease |
+| `login-failures` (`LoginThrottle`) | same handlers, reserved before any lookup, **counts failed outcomes only** (reserve-then-refund, section 2.3 step 2) | client address key | Sliding window 10 min, 10 segments | `LoginFailuresPerIpPer10Minutes` 20 | 100,000 | 429, `Retry-After` |
+| per-username (`LoginThrottle`) | same handlers, reserved before any lookup, **counts failed outcomes only** | normalised username from the body (or the MFA cookie's user) | Sliding window 60 s, 6 segments | `LoginPerUserPerMinute` 10 | 100,000 | 429, `Retry-After` |
+| CPU guard (`LoginThrottle.Cpu`) | around `PasswordSignInAsync` or the dummy hash (released before the sign-in completes) and `ChangePasswordAsync` | single | `ConcurrencyLimiter(permit = LoginConcurrency, queue = LoginQueue, OldestFirst)` | 8 / 16 | 64 / 512 | 429 `rate-limited`, `Retry-After: 2`, metric `rushday.load_shed.rejected{policy=login}` |
 | `password-change` | `POST /api/auth/change-password` | `sub` claim | Fixed window 1 min | `PasswordChangePerUserPerMinute` 5 | 1,000 | 429 |
 | `enrol` | `POST/DELETE /api/me/enrolments*` | `sub` claim | Token bucket | 5 tokens, +5 per 10 s | 1,000 | 429 |
-| `write` | every other mutation, plus the three export GETs | `sub` claim | Token bucket | 120 tokens, +120 per minute | 10,000 | 429 |
-| `health-ready` | `GET /api/health/ready` (inside the global limiter) | client IP | Fixed window 1 min | `HealthReadyPerIpPerMinute` 30 | 100,000 | 503 `server-busy`, `Retry-After: 60` (a probe answers "busy", not "rate-limited"); `RateLimitTests.Ready_probe_is_limited` |
+| `write` | every other mutation, plus the three export GETs | `sub` claim (client address key when anonymous) | Token bucket | 120 tokens, +120 per minute | 10,000 | 429 |
+| `health-ready` | `GET /api/health/ready` (inside the global limiter) | client address key | Fixed window 1 min | `HealthReadyPerIpPerMinute` 30 | 100,000 | 503 `server-busy`, `Retry-After: 60` (a probe answers "busy", not "rate-limited"); `RateLimitTests.Ready_probe_is_limited` |
 | `ops-metrics` | `GET /api/admin/ops/metrics` (outside the global limiter) | `sub` claim | Token bucket | 1 token, +1 per 2 s | same | 429 |
 
-Identity lockout (5 failures, 15 minutes, only when failures arrive from ≥ 3 addresses) is the per-account brake; the
-per-username window is the spray brake; the per-IP failure window stops a single machine from locking accounts it
-does not own; the concurrency guard protects PBKDF2 CPU on 0.1 vCPU. The global `/api` concurrency limiter also
-applies to login. Every 429 and 503 carries `Retry-After` in whole seconds and a ProblemDetails body.
+Identity lockout (5 failures, 15 minutes, only when failures arrive from ≥ 3 addresses, IPv6 counted by /64) is the
+per-account brake; the per-username window of failures is the spray brake; the per-address failure window stops a
+single machine from locking accounts it does not own; the concurrency guard protects PBKDF2 CPU on 0.1 vCPU. The global
+`/api` concurrency limiter also applies to login, and the guard's permits plus queue (8 + 16) stay below its 24
+permits, so a login storm can occupy at most that many of them and never sheds every other `/api` request. Both
+failure windows reserve their permit before the password is checked and refund it on success, so concurrent attempts
+cannot overrun either window (`LoginProtectionTests.Concurrent_failures_cannot_overrun_the_per_address_window`) and the
+owner's own sign-ins never spend the per-username window (`LoginProtectionTests.Successful_logins_do_not_spend_the_per_username_window`).
+Every 429 and 503 carries `Retry-After` in whole seconds and a ProblemDetails body.
 
 ## 6. ProblemDetails
 
@@ -308,9 +372,15 @@ HttpContext.TraceIdentifier`) on every problem and fills `type` when the framewo
 (400 → `validation`, 401 → `unauthenticated`, 403 → `forbidden`, 404 → `not-found`, 405 → `method-not-allowed`,
 413 → `payload-too-large`, 415 → `unsupported-media-type`, 429 → `rate-limited`, 500 → `internal-error`,
 503 → `server-busy`). `UseExceptionHandler()` (no exception text), `UseStatusCodePages()`, `AddRequestTimeouts`
-(15 s default → 503 `timeout`). A transient `NpgsqlException` → 503 `server-busy`, `Retry-After: 2`; the metric
-`rushday.db.pool_wait_timeouts` is incremented only when its inner exception is a `TimeoutException` (pool wait),
-not for a dead pooled connection after a Neon resume.
+(15 s default → 503 `timeout`, `Retry-After: 2`). A transient `NpgsqlException` → 503 `server-busy`, `Retry-After: 2`;
+the metric `rushday.db.pool_wait_timeouts` is incremented only when its inner exception is a `TimeoutException` (pool
+wait), not for a dead pooled connection after a Neon resume.
+
+The `/api/{**rest}` fallback outranks the framework's method and media-type answers: a route that exists but not for
+the method or body type (`PUT /api/auth/login`, a form-encoded POST, and `HEAD` on a GET route, since minimal APIs map
+GET only) answers 404 `not-found` as ProblemDetails rather than 405 or 415. The `method-not-allowed` and
+`unsupported-media-type` slugs stay in the catalogue for the framework paths that do not fall through to it
+(`ProblemTypesTests.Framework_problems_carry_catalogue_types_and_trace_ids`).
 
 Shape: `{ type: "urn:rushday:<slug>", title, status, detail, instance, traceId, ...extensions }`. `detail` is safe to
 show to the caller. The slug catalogue is closed; adding one is a spec change:
@@ -421,7 +491,7 @@ Every endpoint in this table, the `/api/{**rest}` 404 fallback, `MapFallbackToFi
 | `GET /api` | `{ name: "RushDay", story: <the story sentence pair>, commit: string, environment: string, links: { health: "/api/health/live", ready: "/api/health/ready", status: "/api/public/status", login: "/api/auth/login", github: "https://github.com/Ahmeddayyan/RushDay", openapi?: "/api/openapi/v1.json" } }`; `openapi` is present only in Development | 200 |
 | `GET /api/health/live` | `{ status: "Healthy" }` (no dependencies; outside every limiter) | 200 |
 | `GET /api/health/ready` (`health-ready` limiter, inside global) | `{ status: "Healthy" \| "Unhealthy", checks: [{ name: "database", status, durationMs }] }` (`AddDbContextCheck`) | 200, 503 |
-| `GET /api/public/status` | `{ serverTime, institution: { name, shortName, timeZone, privacyNoticeUrl: string \| null, resultsFootnote: string, support: { email: string \| null, url: string \| null } \| null }, academicYear, currentSemester: 'autumn' \| 'spring', nextPublication: PublicationBrief \| null, latestPublication: PublicationBrief \| null, enrolmentWindows: WindowInfo[], demo: { accounts: [{ role, username, password, hint }] } \| null }`; `nextPublication` = earliest `publish_at > now`, `latestPublication` = latest `publish_at <= now`; `privacyNoticeUrl` and `resultsFootnote` come from `Branding:*` configuration at request time; `support` comes from `academic_settings.support_email`/`support_url` (null when both are null); `hint` is the static text of `01-domain-and-data.md` section 7; output-cached 10 s under the named policy `public-status` (`AddPolicy("public-status", b => b.Expire(TimeSpan.FromSeconds(10)).Cache(), excludeDefaultPolicy: true)`, so signed-in callers are served from cache too: the response never varies by user and sets no cookie); `demo` is null unless `Demo:Enabled` | 200 |
+| `GET /api/public/status` | `{ serverTime, institution: { name, shortName, timeZone, privacyNoticeUrl: string \| null, resultsFootnote: string, support: { email: string \| null, url: string \| null } \| null }, academicYear, currentSemester: 'autumn' \| 'spring', nextPublication: PublicationBrief \| null, latestPublication: PublicationBrief \| null, enrolmentWindows: WindowInfo[], demo: { accounts: [{ role, username, password, hint }] } \| null }`; `nextPublication` = earliest `publish_at > now`, `latestPublication` = latest `publish_at <= now`; `privacyNoticeUrl` and `resultsFootnote` come from `Branding:*` configuration at request time; `support` comes from `academic_settings.support_email`/`support_url` (null when both are null); `hint` is the static text of `01-domain-and-data.md` section 7; output-cached 10 s under the named policy `public-status`, a custom `IOutputCachePolicy` (`PublicStatusCachePolicy`: `AddOutputCache(o => o.AddPolicy("public-status", new PublicStatusCachePolicy()))`; GET and HEAD only, 10 s, locking on, and never stored when the response is not a 200 or sets a cookie), so signed-in callers are served from cache too (the default policy, which refuses authenticated requests, is not part of it): the response never varies by user and sets no cookie (`PublicStatusTests.Signed_in_callers_are_served_the_same_uncookied_response` advances the clock a second between the two calls and checks the `Age` header); `demo` is null unless `Demo:Enabled` | 200 |
 | `GET /api/openapi/v1.json` | OpenAPI document (`MapOpenApi("/api/openapi/{documentName}.json")`), **mapped only when `env.IsDevelopment()`**; 404 `not-found` elsewhere | 200 |
 | `GET /api/auth/csrf` | `{ csrfToken }`; sets `rushday.csrf` | 200 |
 | `POST /api/auth/login` (`login` policy + `LoginThrottle`) | body `{ username: string (1..64), password: string (1..128) }` → `LoginResponse`; sets `rushday.auth` (or `rushday.mfa` when `mfaRequired`) | 200; 401 `invalid-credentials`; 429 |
@@ -678,7 +748,12 @@ Module mutations invalidate `catalogue:all` and audit `module.created|updated|le
 Provision, reset, lock and disable set `must_change_password = true` (reset and provision), update the security
 stamp (lock, disable, reset, reset-mfa) and audit `account.provisioned|locked|unlocked|disabled|enabled|password_reset|mfa_reset`.
 A `Student` role requires `studentNumber` and a `Lecturer` role requires `staffNumber`; an `Admin` requires neither.
-Every mutation on an `is_demo` account answers 409 `demo-account` (detail `Demo accounts are read-only`).
+Every mutation on an `is_demo` account answers 409 `demo-account` (detail `Demo accounts are read-only`). A **demo
+actor** (a session with the `demo` claim, whose password is on the login page; `IAuditContext.ActorIsDemo`) may not
+mutate a non-demo account either (409 `demo-account`), so the public demo administrator can never lock, disable, reset
+or re-enable a real account; and every account a demo actor provisions is created with `is_demo = true` (and without
+`must_change_password`, since a demo account cannot change its password), so it is read-only, never locked out, and
+disabled with the rest of the demo when demo mode is switched off (`DemoActorTests`).
 
 **Announcements (university scope)**
 

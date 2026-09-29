@@ -69,7 +69,7 @@ has exactly one role.
 | `user_claims` | `id integer identity PK`, `user_id`, `claim_type`, `claim_value` (unused in v1; claims are computed at sign-in) |
 | `role_claims` | `id integer identity PK`, `role_id`, `claim_type`, `claim_value` (unused) |
 | `user_logins` | `login_provider`, `provider_key`, `provider_display_name`, `user_id`; PK (login_provider, provider_key) (reserved for Entra ID, Should) |
-| `user_tokens` | `user_id`, `login_provider`, `name`, `value`; PK (user_id, login_provider, name). Holds the TOTP secret (`[AspNetUserStore]` / `AuthenticatorKey`, written by `UserManager.ResetAuthenticatorKeyAsync`) and, Should, `RecoveryCodes`. Rows for `is_demo` users are deleted by the demo heal step. |
+| `user_tokens` | `user_id`, `login_provider`, `name`, `value`; PK (user_id, login_provider, name). Holds the TOTP secret (`[AspNetUserStore]` / `AuthenticatorKey`, written by `UserManager.ResetAuthenticatorKeyAsync`), the last accepted TOTP time step (`[RushDay]` / `LastTotpStep`, so a code is accepted once, `02-api.md` section 2.4) and, Should, `RecoveryCodes`. Rows for `is_demo` users are deleted by the demo heal step. |
 | `data_protection_keys` | `id integer identity PK`, `friendly_name text`, `xml text` (from `Microsoft.AspNetCore.DataProtection.EntityFrameworkCore`); the `xml` is AES-256-GCM encrypted under `DataProtection:KeyEncryptionKey` outside Development (`02-api.md` section 2.1), so cookies survive redeploys and a database dump cannot mint them |
 
 ## 3. Domain tables
@@ -356,7 +356,7 @@ S1's `Program.cs` block does the same): `MigrateAsync()` →
 rows get `Status = Published`, `Outcome = Mark`, `PublishedAt = options.ResultsDay`, `UpdatedAt = ResultsDay`, and new
 `Enrolment` rows `Status = Active`, `Source = Seed`, `AcademicYear = '2025/26'`) →
 `StartupBackfills.RunAsync(RushDayDbContext db, StartupBackfillOptions options, TimeProvider clock, ILogger logger,
-CancellationToken ct)` when `Database:BackfillOnStartup=true` (default true in Production and under
+CancellationToken ct)` when `Database:BackfillOnStartup=true` (default true outside Development and under
 `--migrate-and-seed`; false in Development unless set). A customer database therefore starts with roles, settings,
 the bootstrap administrator and nothing synthetic.
 
@@ -473,8 +473,8 @@ windows and academic year (step 6) and frees CS3099's places (step 11).
   registration uses the constant, so a demo hash never verifies as `SuccessRehashNeeded` (which would make
   `PasswordSignInAsync` rewrite a per-user hash on first login). `login-storm.js` measures the cost, and the login
   concurrency guard exists for it.
-- Temporary passwords (provision, reset): 16 characters drawn with `RandomNumberGenerator` from the 55-character
-  alphabet `A-Z a-z 2-9` minus `I l O` (no `0`, `1`, `I`, `l`, `O`; about 92 bits), shown once.
+- Temporary passwords (provision, reset): 16 characters drawn with `RandomNumberGenerator` from the 57-character
+  alphabet `A-Z a-z 2-9` minus `I l O` (no `0`, `1`, `I`, `l`, `O`; about 93 bits), shown once.
 - `Bootstrap:AdminPassword` is run through `RushDayPasswordValidator.Check` before use (section 6 step 5).
 - Lockout: `AllowedForNewUsers = true`, `MaxFailedAccessAttempts = 5`, `DefaultLockoutTimeSpan = 15 minutes`; when
   failures count is decided by `LoginThrottle` (`02-api.md` section 2.3): never for `is_demo` users, and only when the

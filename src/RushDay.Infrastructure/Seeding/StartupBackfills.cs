@@ -63,6 +63,9 @@ public static class StartupBackfills
     public const string ReconcileEnrolledCountSql =
         "UPDATE modules m SET enrolled_count = c.n FROM (SELECT e.module_id, count(*) n FROM enrolments e JOIN academic_settings s ON s.id = 1 AND e.academic_year = s.academic_year WHERE e.status = 'Active' GROUP BY e.module_id) c WHERE m.id = c.module_id AND m.enrolled_count <> c.n;";
 
+    /// <summary>The first statement of the reconciliation: every module row, in id order, before either count is taken.</summary>
+    public const string ReconcileLockModulesSql = "SELECT id FROM modules ORDER BY id FOR NO KEY UPDATE;";
+
     public const string ReconcileZeroEnrolledCountSql =
         "UPDATE modules m SET enrolled_count = 0 WHERE m.enrolled_count <> 0 AND NOT EXISTS (SELECT 1 FROM enrolments e JOIN academic_settings s ON s.id = 1 AND e.academic_year = s.academic_year WHERE e.module_id = m.id AND e.status = 'Active');";
 
@@ -179,14 +182,41 @@ public static class StartupBackfills
         return results;
     }
 
-    /// <summary>Runs the two year-scoped reconciliation statements and returns the number of module rows corrected.</summary>
+    /// <summary>
+    /// Runs the two year-scoped reconciliation statements in one transaction (the caller's when there is one, as in the
+    /// settings year change and the startup step; else its own) and returns the number of module rows corrected. Every
+    /// module row is locked first (<see cref="ReconcileLockModulesSql"/>, id order, the mode an enrolment's claim takes),
+    /// so the lock waits out any enrolment or withdrawal that has already changed a count, and the two
+    /// <c>UPDATE</c>s then run as fresh statements whose snapshots include that transaction's rows. Without the lock the
+    /// counting subquery's snapshot predates the commit the <c>UPDATE</c> waited for, and the stale count is written over
+    /// the committed one (04-performance-and-ops.md section 2.3).
+    /// </summary>
     public static async Task<int> ReconcileEnrolledCountAsync(RushDayDbContext db, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(db);
 
-        var corrected = await db.Database.ExecuteSqlRawAsync(ReconcileEnrolledCountSql, cancellationToken);
-        corrected += await db.Database.ExecuteSqlRawAsync(ReconcileZeroEnrolledCountSql, cancellationToken);
-        return corrected;
+        var own = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, cancellationToken)
+            : null;
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(ReconcileLockModulesSql, cancellationToken);
+            var corrected = await db.Database.ExecuteSqlRawAsync(ReconcileEnrolledCountSql, cancellationToken);
+            corrected += await db.Database.ExecuteSqlRawAsync(ReconcileZeroEnrolledCountSql, cancellationToken);
+            if (own is not null)
+            {
+                await own.CommitAsync(cancellationToken);
+            }
+
+            return corrected;
+        }
+        finally
+        {
+            if (own is not null)
+            {
+                await own.DisposeAsync();
+            }
+        }
     }
 
     /// <summary>

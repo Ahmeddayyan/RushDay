@@ -1,9 +1,11 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using RushDay.Domain.Enrolments;
 using RushDay.Domain.Grades;
 using RushDay.Domain.Modules;
+using RushDay.Infrastructure.Enrolments;
 
 namespace RushDay.IntegrationTests.Student;
 
@@ -59,8 +61,9 @@ public sealed class GradeVisibilityTests(RushDayApiFactory factory)
         Assert.Equal(["ZZ2204"], TestCodes(export.GetProperty("grades")));
         Assert.All(export.GetProperty("grades").EnumerateArray(), g =>
         {
-            Assert.Equal("published", g.GetProperty("status").GetString());
-            Assert.True(g.GetProperty("visibleToStudent").GetBoolean());
+            Assert.False(g.TryGetProperty("status", out _));
+            Assert.False(g.TryGetProperty("version", out _));
+            Assert.False(g.TryGetProperty("visibleToStudent", out _));
         });
 
         // After the instant the future-published mark appears everywhere; draft and submitted never do.
@@ -141,6 +144,160 @@ public sealed class GradeVisibilityTests(RushDayApiFactory factory)
         // The average is over the three marks that are still visible.
         Assert.Equal(dashboard.GetProperty("weightedAverage").GetDouble(), results.GetProperty("weightedAverage").GetDouble(), 6);
         Assert.Equal(dashboard.GetProperty("weightedAverage").GetDouble(), export.GetProperty("weightedAverage").GetDouble(), 6);
+    }
+
+    /// <summary>
+    /// Cancel and unpublish revert grades to Submitted (02-api.md section 8.5), in the worst case keeping the instant: the
+    /// mark disappears from every student response and the semester falls back to <c>pending</c>. Published exactly
+    /// at the current instant is visible (<c>published_at &lt;= now</c>).
+    /// </summary>
+    [Fact]
+    public async Task A_grade_reverted_to_submitted_is_hidden_and_its_semester_is_pending_again()
+    {
+        const string student = "S000034";
+        await factory.CreateModuleAsync("ZZ2220", Semester.Spring, capacity: 10, credits: 5);
+        using var client = await factory.LoginStudentAsync(student);
+        using (var enrol = await client.EnrolAsync("ZZ2220"))
+        {
+            Assert.Equal(HttpStatusCode.Created, enrol.StatusCode);
+        }
+
+        await factory.PutGradeAsync(student, "ZZ2220", GradeStatus.Published, 91, publishedAt: factory.Clock.GetUtcNow().AddMinutes(-5));
+        Assert.Equal(["ZZ2220"], TestCodes(SemesterOf(await client.GetJsonAsync("/api/me/results"), StudentData.CurrentYear, "spring").GetProperty("results")));
+
+        var (studentId, moduleId) = (await factory.StudentIdAsync(student), await factory.ModuleIdAsync("ZZ2220"));
+        await factory.WithDbAsync(db => db.Grades.Where(g => g.StudentId == studentId && g.ModuleId == moduleId)
+            .ExecuteUpdateAsync(s => s.SetProperty(g => g.Status, GradeStatus.Submitted).SetProperty(g => g.PublicationId, (Guid?)null)));
+
+        foreach (var path in new[] { "/api/me/dashboard", "/api/me/results", "/api/me/export.json" })
+        {
+            var body = (await client.GetJsonAsync(path)).GetRawText();
+            Assert.DoesNotContain("\"mark\":91", body, StringComparison.Ordinal);
+        }
+
+        var spring = SemesterOf(await client.GetJsonAsync("/api/me/results"), StudentData.CurrentYear, "spring");
+        Assert.Equal("pending", spring.GetProperty("state").GetString());
+        Assert.Empty(spring.GetProperty("results").EnumerateArray());
+
+        await factory.WithDbAsync(db => db.Grades.Where(g => g.StudentId == studentId && g.ModuleId == moduleId)
+            .ExecuteUpdateAsync(s => s.SetProperty(g => g.Status, GradeStatus.Published).SetProperty(g => g.PublishedAt, factory.Clock.GetUtcNow())));
+        Assert.Contains("\"mark\":91", (await client.GetJsonAsync("/api/me/results")).GetRawText(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A scheduled grade on a withdrawn enrolment is not even "scheduled": the pair is omitted, and neither the student
+    /// nor an administrator's override can re-enrol past it (<c>results-exist</c>).
+    /// </summary>
+    [Fact]
+    public async Task A_scheduled_grade_of_a_withdrawn_enrolment_is_not_scheduled_and_blocks_re_enrolment()
+    {
+        const string student = "S000035";
+        await factory.CreateModuleAsync("ZZ2221", Semester.Spring, capacity: 10, credits: 5);
+        using var client = await factory.LoginStudentAsync(student);
+        using (var enrol = await client.EnrolAsync("ZZ2221"))
+        {
+            Assert.Equal(HttpStatusCode.Created, enrol.StatusCode);
+        }
+
+        await factory.PutGradeAsync(student, "ZZ2221", GradeStatus.Published, 64, publishedAt: factory.Clock.GetUtcNow().AddDays(3));
+        var (studentId, moduleId) = (await factory.StudentIdAsync(student), await factory.ModuleIdAsync("ZZ2221"));
+        await factory.WithDbAsync(db => db.Enrolments.Where(e => e.StudentId == studentId && e.ModuleId == moduleId)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.Status, EnrolmentStatus.Withdrawn).SetProperty(e => e.WithdrawnAt, factory.Clock.GetUtcNow())));
+
+        var results = await client.GetJsonAsync("/api/me/results");
+        Assert.DoesNotContain(results.GetProperty("semesters").EnumerateArray(), s => s.GetProperty("academicYear").GetString() == StudentData.CurrentYear && s.GetProperty("semester").GetString() == "spring");
+
+        using (var again = await client.EnrolAsync("ZZ2221"))
+        {
+            await again.AssertProblemAsync(HttpStatusCode.Conflict, "results-exist");
+        }
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var overridden = await scope.ServiceProvider.GetRequiredService<EnrolmentService>()
+            .EnrolAsync(studentId, "ZZ2221", null, new EnrolOptions(Override: true, Reason: "An override cannot retake a completed module."));
+        Assert.Equal(EnrolmentError.ResultsExist, overridden.Failure?.Error);
+    }
+
+    /// <summary>
+    /// <c>completed[]</c> shows an outcome and a mark only when the grade is visible: a Deferred or Absent outcome has no
+    /// mark or band, a Draft shows nothing, and the weighted average counts visible marks only (a corrected one with
+    /// <c>correctedAt</c>).
+    /// </summary>
+    [Fact]
+    public async Task Completed_modules_show_visible_outcomes_only_and_the_average_counts_marks_only()
+    {
+        const string student = "S000036";
+        using var client = await factory.LoginStudentAsync(student);
+        var codes = (await client.GetJsonAsync("/api/me/dashboard")).GetProperty("completed").EnumerateArray().Select(c => c.GetProperty("code").GetString()!).ToList();
+        Assert.Equal(4, codes.Count);
+
+        var studentId = await factory.StudentIdAsync(student);
+        var ids = new List<Guid>();
+        foreach (var code in codes)
+        {
+            ids.Add(await factory.ModuleIdAsync(code));
+        }
+
+        var now = factory.Clock.GetUtcNow();
+        await factory.WithDbAsync(db => db.Grades.Where(g => g.StudentId == studentId && g.ModuleId == ids[0])
+            .ExecuteUpdateAsync(s => s.SetProperty(g => g.Outcome, GradeOutcome.Deferred).SetProperty(g => g.Mark, (int?)null)));
+        await factory.WithDbAsync(db => db.Grades.Where(g => g.StudentId == studentId && g.ModuleId == ids[1])
+            .ExecuteUpdateAsync(s => s.SetProperty(g => g.Outcome, GradeOutcome.Absent).SetProperty(g => g.Mark, (int?)null)));
+        await factory.WithDbAsync(db => db.Grades.Where(g => g.StudentId == studentId && g.ModuleId == ids[2])
+            .ExecuteUpdateAsync(s => s.SetProperty(g => g.Status, GradeStatus.Draft).SetProperty(g => g.Mark, 3).SetProperty(g => g.PublishedAt, (DateTimeOffset?)null).SetProperty(g => g.PublicationId, (Guid?)null)));
+        await factory.WithDbAsync(db => db.Grades.Where(g => g.StudentId == studentId && g.ModuleId == ids[3])
+            .ExecuteUpdateAsync(s => s.SetProperty(g => g.Mark, 97).SetProperty(g => g.CorrectedAt, now).SetProperty(g => g.Version, 7)));
+
+        var dashboard = await client.GetJsonAsync("/api/me/dashboard");
+        var completed = dashboard.GetProperty("completed").EnumerateArray().ToDictionary(c => c.GetProperty("code").GetString()!);
+        Assert.Equal(("deferred", JsonValueKind.Null, JsonValueKind.Null), Outcome(completed[codes[0]]));
+        Assert.Equal(("absent", JsonValueKind.Null, JsonValueKind.Null), Outcome(completed[codes[1]]));
+        Assert.Equal((null, JsonValueKind.Null, JsonValueKind.Null), Outcome(completed[codes[2]]));
+        Assert.Equal(97, completed[codes[3]].GetProperty("mark").GetInt32());
+        Assert.NotEqual(JsonValueKind.Null, completed[codes[3]].GetProperty("band").ValueKind);
+
+        Assert.DoesNotContain(codes[2], MarkCodes(dashboard.GetProperty("results")));
+        var corrected = dashboard.GetProperty("results").EnumerateArray().Single(r => r.GetProperty("moduleCode").GetString() == codes[3]);
+        Assert.NotEqual(JsonValueKind.Null, corrected.GetProperty("correctedAt").ValueKind);
+        Assert.DoesNotContain(codes[2], MarkCodes((await client.GetJsonAsync("/api/me/export.json")).GetProperty("grades")));
+
+        var results = await client.GetJsonAsync("/api/me/results");
+        Assert.Equal(97.0, results.GetProperty("weightedAverage").GetDouble(), 3);
+        Assert.Equal(97.0, dashboard.GetProperty("weightedAverage").GetDouble(), 3);
+
+        static (string?, JsonValueKind, JsonValueKind) Outcome(JsonElement module) =>
+            (module.GetProperty("outcome").GetString(), module.GetProperty("mark").ValueKind, module.GetProperty("band").ValueKind);
+    }
+
+    /// <summary>
+    /// A semester with one visible and one scheduled grade is <c>published</c>, and the scheduled mark appears in no
+    /// student response until its instant.
+    /// </summary>
+    [Fact]
+    public async Task A_semester_mixing_a_visible_and_a_scheduled_grade_never_sends_the_scheduled_mark()
+    {
+        const string student = "S000037";
+        await factory.CreateModuleAsync("ZZ2222", Semester.Spring, capacity: 10, credits: 5);
+        await factory.CreateModuleAsync("ZZ2223", Semester.Spring, capacity: 10, credits: 5);
+        using var client = await factory.LoginStudentAsync(student);
+        foreach (var code in new[] { "ZZ2222", "ZZ2223" })
+        {
+            using var enrol = await client.EnrolAsync(code);
+            Assert.Equal(HttpStatusCode.Created, enrol.StatusCode);
+        }
+
+        await factory.PutGradeAsync(student, "ZZ2222", GradeStatus.Published, 55, publishedAt: factory.Clock.GetUtcNow().AddMinutes(-1));
+        await factory.PutGradeAsync(student, "ZZ2223", GradeStatus.Published, 88, publishedAt: factory.Clock.GetUtcNow().AddDays(2));
+
+        foreach (var path in new[] { "/api/me/dashboard", "/api/me/results", "/api/me/export.json", "/api/me/enrolments" })
+        {
+            var body = (await client.GetJsonAsync(path)).GetRawText();
+            Assert.DoesNotContain("\"mark\":88", body, StringComparison.Ordinal);
+        }
+
+        var spring = SemesterOf(await client.GetJsonAsync("/api/me/results"), StudentData.CurrentYear, "spring");
+        Assert.Equal("published", spring.GetProperty("state").GetString());
+        Assert.Equal(["ZZ2222"], TestCodes(spring.GetProperty("results")));
     }
 
     private static List<string> MarkCodes(JsonElement results) =>

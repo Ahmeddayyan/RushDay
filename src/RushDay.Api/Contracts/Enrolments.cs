@@ -7,11 +7,19 @@ using RushDay.Infrastructure.Queries;
 
 namespace RushDay.Api.Contracts;
 
-/// <summary><c>POST /api/me/enrolments</c>. The code is upper-cased server-side before lookup.</summary>
+/// <summary>
+/// <c>POST /api/me/enrolments</c>. The code must be two ASCII letters and four ASCII digits, surrounding white space
+/// allowed; it is trimmed and upper-cased server-side before lookup. Anything else (a NUL character, a non-ASCII digit)
+/// is 400 <c>validation</c> before any query runs.
+/// </summary>
 public sealed record EnrolRequest
 {
+    /// <summary>The body pattern: case-insensitive letters by listing both cases, digits as <c>[0-9]</c> (never <c>\d</c>, which is Unicode).</summary>
+    public const string ModuleCodePattern = @"^\s*[A-Za-z]{2}[0-9]{4}\s*$";
+
     [Required]
     [StringLength(16, MinimumLength = 1)]
+    [RegularExpression(ModuleCodePattern)]
     public string ModuleCode { get; init; } = string.Empty;
 }
 

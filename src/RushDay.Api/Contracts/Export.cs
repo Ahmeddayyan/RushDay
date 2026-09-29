@@ -36,8 +36,9 @@ public sealed record StudentEnrolmentRecord(
 }
 
 /// <summary>
-/// <c>AdminStudentView.grades[]</c> (02-api.md section 8.5). A student's own export carries only rows with
-/// <c>visibleToStudent = true</c> (<see cref="GradeQueries.VisibleToStudents"/>), so there it is always published.
+/// <c>AdminStudentView.grades[]</c> (02-api.md section 8.5): every status, with <c>status</c>, <c>version</c> and
+/// <c>visibleToStudent</c>, for the administrator only. The student export does not use it: its grades are
+/// <see cref="GradeResult"/> rows (visible grades only, no workflow metadata).
 /// </summary>
 public sealed record StudentGradeRecord(
     string ModuleCode,
@@ -53,7 +54,7 @@ public sealed record StudentGradeRecord(
     int Version,
     DateTimeOffset? CorrectedAt)
 {
-    /// <summary>A visible grade: Published, instant passed, enrolment active.</summary>
+    /// <summary>A visible grade as the administrator's view shows it: Published, instant passed, enrolment active.</summary>
     public static StudentGradeRecord FromVisible(VisibleGradeRow grade)
     {
         ArgumentNullException.ThrowIfNull(grade);
@@ -74,14 +75,14 @@ public sealed record StudentGradeRecord(
 }
 
 /// <summary>
-/// <c>StudentExport</c> = <c>AdminStudentView</c> minus <c>recentAudit</c> and <c>account</c> (02-api.md section 8.3):
-/// the student, every enrolment, the visible grades only (no drafts), the average as the student sees it, and the
-/// instant of the export.
+/// <c>StudentExport</c> (02-api.md section 8.3): the student, every enrolment, the visible grades only as
+/// <see cref="GradeResult"/> (no drafts, and none of <c>status</c>, <c>version</c> or <c>visibleToStudent</c>, which would
+/// describe states the student never sees, T6), the average as the student sees it, and the instant of the export.
 /// </summary>
 public sealed record StudentExport(
     StudentProfile Student,
     IReadOnlyList<StudentEnrolmentRecord> Enrolments,
-    IReadOnlyList<StudentGradeRecord> Grades,
+    IReadOnlyList<GradeResult> Grades,
     double? WeightedAverage,
     string? Classification,
     DateTimeOffset ExportedAt)
@@ -92,7 +93,7 @@ public sealed record StudentExport(
         return new StudentExport(
             StudentProfile.From(data.Student),
             [.. data.Enrolments.Select(StudentEnrolmentRecord.From)],
-            [.. data.Grades.Select(StudentGradeRecord.FromVisible)],
+            GradeResult.From(data.Grades),
             data.WeightedAverage,
             data.Classification,
             exportedAt);

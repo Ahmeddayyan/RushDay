@@ -43,7 +43,8 @@ public sealed record CatalogueModule(
 /// <summary>
 /// <c>catalogue:all</c>, 30 s (04-performance-and-ops.md section 4, D13): every active module ordered by code with its
 /// lecturers, built with two queries (modules; module_lecturers ⋈ lecturers) and viewer-agnostic, so a rush on the
-/// catalogue does no database work. Invalidated by the administrator's module routes and trim (S6).
+/// catalogue does no database work. Invalidated by the administrator's module routes and trim (S6); the key is
+/// generation-versioned (<see cref="CacheKeys.GetOrCreateVersionedAsync{T}"/>), so an in-flight fill cannot undo an invalidation.
 /// </summary>
 public sealed class CatalogueCache(HybridCache cache, IDbContextFactory<RushDayDbContext> contexts, ICacheMetrics metrics)
 {
@@ -51,7 +52,7 @@ public sealed class CatalogueCache(HybridCache cache, IDbContextFactory<RushDayD
 
     public async ValueTask<IReadOnlyList<CatalogueModule>> GetAsync(CancellationToken cancellationToken = default)
     {
-        var holder = await cache.GetOrCreateAsync(
+        var holder = await cache.GetOrCreateVersionedAsync(
             metrics,
             CacheKeys.Catalogue,
             CacheKeys.Catalogue,
@@ -62,7 +63,7 @@ public sealed class CatalogueCache(HybridCache cache, IDbContextFactory<RushDayD
     }
 
     public ValueTask InvalidateAsync(CancellationToken cancellationToken = default) =>
-        cache.RemoveAsync(CacheKeys.Catalogue, cancellationToken);
+        cache.InvalidateVersionedAsync(CacheKeys.Catalogue, cancellationToken);
 
     /// <summary>The lecturers of the given modules (all when <paramref name="moduleIds"/> is null), grouped by module id.</summary>
     public static async Task<Dictionary<Guid, IReadOnlyList<ModuleLecturerInfo>>> LoadLecturersAsync(

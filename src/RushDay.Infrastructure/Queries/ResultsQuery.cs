@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using RushDay.Domain.Enrolments;
-using RushDay.Domain.Grades;
 using RushDay.Domain.Modules;
 using RushDay.Infrastructure.Grades;
 using RushDay.Infrastructure.Persistence;
@@ -38,14 +37,7 @@ public sealed class ResultsQuery(RushDayDbContext db)
         var visible = await GradeQueries.VisibleResultsFor(db, studentId, now).ToListAsync(cancellationToken);
 
         // Instants only: a scheduled grade's mark never leaves the database on a student route.
-        var scheduled = await (
-            from g in db.Grades.AsNoTracking()
-            join m in db.Modules.AsNoTracking() on g.ModuleId equals m.Id
-            join e in db.Enrolments.AsNoTracking() on new { g.StudentId, g.ModuleId } equals new { e.StudentId, e.ModuleId }
-            where g.StudentId == studentId && e.Status == EnrolmentStatus.Active && g.Status == GradeStatus.Published && g.PublishedAt > now
-            group g.PublishedAt by new { e.AcademicYear, m.Semester } into pair
-            select new ScheduledPair(pair.Key.AcademicYear, pair.Key.Semester, pair.Min()!.Value))
-            .ToListAsync(cancellationToken);
+        var scheduled = await GradeQueries.ScheduledInstantsFor(db, studentId, now).ToListAsync(cancellationToken);
 
         var pending = await (
             from e in db.Enrolments.AsNoTracking()

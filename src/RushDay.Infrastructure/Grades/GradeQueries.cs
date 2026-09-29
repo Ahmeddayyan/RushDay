@@ -3,6 +3,7 @@ using RushDay.Domain.Enrolments;
 using RushDay.Domain.Grades;
 using RushDay.Domain.Modules;
 using RushDay.Infrastructure.Persistence;
+using RushDay.Infrastructure.Queries;
 
 namespace RushDay.Infrastructure.Grades;
 
@@ -26,8 +27,10 @@ public sealed record VisibleGradeRow(
 /// <summary>
 /// The visibility rule that must be impossible to get wrong (00-overview.md section 4.3, 02-api.md section 8.3, T6): a
 /// student sees a grade iff it is Published, its <c>published_at</c> has passed, and the student's enrolment on that
-/// module is Active. <see cref="VisibleToStudents"/> is the only way a student route reads grade rows; every student
-/// read of marks (dashboard, results, export) goes through <see cref="VisibleResultsFor"/>, which is built on it.
+/// module is Active. Every student route reads grade rows through this class only: marks through
+/// <see cref="VisibleResultsFor"/> (dashboard, results, export), which is built on <see cref="VisibleToStudents"/>;
+/// scheduled instants, never marks, through <see cref="ScheduledInstantsFor"/>; statuses, never marks, through
+/// <see cref="WithResults"/>.
 /// Draft, Submitted and future-published marks, and the marks of a withdrawn enrolment, never leave the database on a
 /// student route.
 /// </summary>
@@ -72,6 +75,25 @@ public static class GradeQueries
                    g.PublishedAt!.Value,
                    g.CorrectedAt,
                    g.Version);
+    }
+
+    /// <summary>
+    /// The earliest future instant per (academic year, semester) at which one student's published grades become
+    /// visible: <c>SELECT e.academic_year, m.semester, min(g.published_at) FROM grades g JOIN modules m JOIN enrolments e
+    /// ... WHERE g.student_id = @s AND e.status = 'Active' AND g.status = 'Published' AND g.published_at &gt; @now
+    /// GROUP BY e.academic_year, m.semester</c>. It projects instants only, never a mark, so the results page can say
+    /// "scheduled" without a scheduled mark leaving the database; a withdrawn enrolment's grade is not even scheduled.
+    /// </summary>
+    public static IQueryable<ScheduledPair> ScheduledInstantsFor(RushDayDbContext db, Guid studentId, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+
+        return from g in db.Grades.AsNoTracking()
+               join m in db.Modules.AsNoTracking() on g.ModuleId equals m.Id
+               join e in db.Enrolments.AsNoTracking() on new { g.StudentId, g.ModuleId } equals new { e.StudentId, e.ModuleId }
+               where g.StudentId == studentId && e.Status == EnrolmentStatus.Active && g.Status == GradeStatus.Published && g.PublishedAt > now
+               group g.PublishedAt by new { e.AcademicYear, m.Semester } into pair
+               select new ScheduledPair(pair.Key.AcademicYear, pair.Key.Semester, pair.Min()!.Value);
     }
 
     /// <summary>

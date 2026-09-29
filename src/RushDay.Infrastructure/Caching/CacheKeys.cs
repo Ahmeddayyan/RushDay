@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Caching.Hybrid;
 
 namespace RushDay.Infrastructure.Caching;
@@ -55,6 +58,58 @@ public static class CacheKeys
 
         metrics.CacheRequest(metricName, hit: !missed);
         return value;
+    }
+
+    /// <summary>
+    /// <see cref="GetOrCreateAsync{T}"/> under a generation-versioned key, <c>{key}:v{generation}</c> (04 section 4):
+    /// <see cref="InvalidateVersionedAsync"/> moves readers to the next generation, so a fill that was already running
+    /// when the data changed (it may have read the old rows) stores its value under a key nobody reads any more.
+    /// <c>HybridCache.RemoveAsync</c> alone cannot do that: it does not stop an in-flight fill, which then stores the
+    /// pre-change value for a whole lifetime. The metric keeps the unversioned <paramref name="metricName"/>.
+    /// </summary>
+    public static ValueTask<T> GetOrCreateVersionedAsync<T>(
+        this HybridCache cache,
+        ICacheMetrics metrics,
+        string key,
+        string metricName,
+        TimeSpan lifetime,
+        Func<CancellationToken, ValueTask<T>> factory,
+        CancellationToken cancellationToken) =>
+        cache.GetOrCreateAsync(metrics, CacheGenerations.CurrentKey(cache, key), metricName, lifetime, factory, cancellationToken);
+
+    /// <summary>
+    /// Invalidates a versioned entry: advances the generation first (every later read misses and fills afresh), then
+    /// removes the retired generation's entry to free it. Call it after the change has committed.
+    /// </summary>
+    public static ValueTask InvalidateVersionedAsync(this HybridCache cache, string key, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(cache);
+        return cache.RemoveAsync(CacheGenerations.Advance(cache, key), cancellationToken);
+    }
+}
+
+/// <summary>
+/// The generation counters behind <see cref="CacheKeys.GetOrCreateVersionedAsync{T}"/>, one set per
+/// <see cref="HybridCache"/> instance (a host), so two test hosts in one process never share a generation.
+/// </summary>
+public static class CacheGenerations
+{
+    private static readonly ConditionalWeakTable<HybridCache, ConcurrentDictionary<string, StrongBox<long>>> Counters = new();
+
+    /// <summary>The key readers use now: <c>{key}:v{generation}</c>.</summary>
+    public static string CurrentKey(HybridCache cache, string key) => Versioned(key, Volatile.Read(ref Counter(cache, key).Value));
+
+    /// <summary>Moves <paramref name="key"/> to its next generation and returns the retired generation's key.</summary>
+    public static string Advance(HybridCache cache, string key) => Versioned(key, Interlocked.Increment(ref Counter(cache, key).Value) - 1);
+
+    private static string Versioned(string key, long generation) => key + ":v" + generation.ToString(CultureInfo.InvariantCulture);
+
+    private static StrongBox<long> Counter(HybridCache cache, string key)
+    {
+        ArgumentNullException.ThrowIfNull(cache);
+        ArgumentException.ThrowIfNullOrEmpty(key);
+        return Counters.GetValue(cache, _ => new ConcurrentDictionary<string, StrongBox<long>>(StringComparer.Ordinal))
+            .GetOrAdd(key, _ => new StrongBox<long>());
     }
 }
 

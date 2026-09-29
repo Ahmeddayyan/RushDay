@@ -73,22 +73,47 @@ public static class ProblemDetailsCustomizer
 }
 
 /// <summary>
-/// A transient <see cref="NpgsqlException"/> (pool wait timeout, a connection that died during a Neon suspend,
-/// 53300) becomes 503 <c>server-busy</c> with <c>Retry-After: 2</c> instead of a 500 (04-performance-and-ops.md
-/// section 5); <c>rushday.db.pool_wait_timeouts</c> counts only the pool-wait case. Anything else falls through to the
-/// default handler: 500 <c>internal-error</c> with the <c>traceId</c> and no exception text.
+/// A transient <see cref="NpgsqlException"/> (pool wait timeout, a command timeout, a connection that died during a
+/// Neon suspend, 53300) becomes 503 <c>server-busy</c> with <c>Retry-After: 2</c> instead of a 500
+/// (04-performance-and-ops.md section 5); <c>rushday.db.pool_wait_timeouts</c> counts only the pool-wait case, the
+/// exception Npgsql throws when no pooled connection became free within <c>Timeout</c>
+/// (<see cref="IsPoolExhaustion"/>), never a command that timed out waiting on a lock. Text PostgreSQL cannot store
+/// (SQLSTATE 22021, a NUL character) that slipped past validation is 400 <c>validation</c>, not a 500. Anything else
+/// falls through to the default handler: 500 <c>internal-error</c> with the <c>traceId</c> and no exception text.
 /// </summary>
 public sealed class RushDayExceptionHandler(RushDayMetrics metrics, ILogger<RushDayExceptionHandler> logger) : IExceptionHandler
 {
+    /// <summary>The start of the message of Npgsql's pool-exhaustion exception (Npgsql 10, <c>PoolingDataSource</c>).</summary>
+    public const string PoolExhaustedMessage = "The connection pool has been exhausted";
+
+    /// <summary>SQLSTATE 22021 <c>character_not_in_repertoire</c>: PostgreSQL rejects a NUL byte in text.</summary>
+    public const string CharacterNotInRepertoire = "22021";
+
+    /// <summary>True only for the pool-wait timeout: a transient exception whose inner exception is a timeout and whose message is Npgsql's pool-exhaustion text.</summary>
+    public static bool IsPoolExhaustion(NpgsqlException exception) =>
+        exception is { InnerException: TimeoutException } && exception.Message.StartsWith(PoolExhaustedMessage, StringComparison.Ordinal);
+
     public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
     {
-        var npgsql = Find<NpgsqlException>(exception);
-        if (npgsql is not { IsTransient: true } || httpContext.Response.HasStarted)
+        if (httpContext.Response.HasStarted)
         {
             return false;
         }
 
-        if (npgsql.InnerException is TimeoutException)
+        if (Find<PostgresException>(exception) is { SqlState: CharacterNotInRepertoire })
+        {
+            logger.LogInformation("Request text PostgreSQL cannot store (SQLSTATE 22021) answered 400 validation.");
+            await ProblemResults.WriteAsync(httpContext, StatusCodes.Status400BadRequest, ProblemTypes.Validation);
+            return true;
+        }
+
+        var npgsql = Find<NpgsqlException>(exception);
+        if (npgsql is not { IsTransient: true })
+        {
+            return false;
+        }
+
+        if (IsPoolExhaustion(npgsql))
         {
             metrics.PoolWaitTimeout();
         }

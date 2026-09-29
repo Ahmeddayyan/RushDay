@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.EntityFrameworkCore;
 using RushDay.Infrastructure.Seeding;
+using RushDay.IntegrationTests.Student;
 
 namespace RushDay.IntegrationTests.Auth;
 
@@ -100,16 +102,55 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
         }
     }
 
+    /// <summary>Every GET of <c>/api/me</c> (02-api.md section 8.3).</summary>
+    private static readonly string[] StudentReads = ["/api/me/dashboard", "/api/me/results", "/api/me/timetable", "/api/me/enrolments", "/api/me/export.json"];
+
+    /// <summary>
+    /// A student who must change their password is gated on every student route, reads and mutations alike, and the
+    /// refused mutations write no audit row (02-api.md section 2.3; review S4 D8).
+    /// </summary>
+    [Fact]
+    public async Task Password_change_gate_holds_on_every_student_route_and_audits_nothing()
+    {
+        const string student = "S000038";
+        await factory.WithDbAsync(db => db.Users.Where(u => u.NormalizedUserName == student).ExecuteUpdateAsync(s => s.SetProperty(u => u.MustChangePassword, true)));
+        using var client = await factory.LoginStudentAsync(student);
+
+        foreach (var path in StudentReads.Concat(["/api/modules", "/api/modules/CS3099", "/api/announcements"]))
+        {
+            using var response = await client.GetAsync(path);
+            await response.AssertProblemAsync(HttpStatusCode.Forbidden, "password-change-required");
+        }
+
+        using (var enrol = await client.PostAsJsonAsync("/api/me/enrolments", new { moduleCode = "CS3099" }))
+        {
+            await enrol.AssertProblemAsync(HttpStatusCode.Forbidden, "password-change-required");
+        }
+
+        using (var withdraw = await client.DeleteAsync("/api/me/enrolments/CS3099"))
+        {
+            await withdraw.AssertProblemAsync(HttpStatusCode.Forbidden, "password-change-required");
+        }
+
+        Assert.Equal(0, await factory.WithDbAsync(db => db.AuditEvents.AsNoTracking().CountAsync(a => a.ActorUsername == student)));
+        Assert.Null(await factory.EnrolmentAsync(student, "CS3099"));
+    }
+
     [Fact]
     public async Task Lecturer_on_student_routes_is_403()
     {
         using var lecturer = await factory.LoginAsync(DemoAccounts.LecturerUsername, DemoAccounts.LecturerPassword);
 
-        foreach (var path in new[] { "/api/me/dashboard", "/api/me/results", "/api/me/timetable", "/api/me/enrolments" })
+        foreach (var path in StudentReads)
         {
             using var response = await lecturer.GetAsync(path);
             await response.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
         }
+
+        using var enrol = await lecturer.PostAsJsonAsync("/api/me/enrolments", new { moduleCode = "CS3099" });
+        await enrol.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
+        using var withdraw = await lecturer.DeleteAsync("/api/me/enrolments/CS3099");
+        await withdraw.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
     }
 
     [Fact]
@@ -117,10 +158,16 @@ public sealed class AuthorizationMatrixTests(RushDayApiFactory factory)
     {
         using var admin = await factory.LoginAsync(DemoAccounts.AdminUsername, DemoAccounts.AdminPassword);
 
-        using var dashboard = await admin.GetAsync("/api/me/dashboard");
-        await dashboard.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
+        foreach (var path in StudentReads)
+        {
+            using var response = await admin.GetAsync(path);
+            await response.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
+        }
+
         using var enrol = await admin.PostAsJsonAsync("/api/me/enrolments", new { moduleCode = "CS3099" });
         await enrol.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
+        using var withdraw = await admin.DeleteAsync("/api/me/enrolments/CS3099");
+        await withdraw.AssertProblemAsync(HttpStatusCode.Forbidden, "forbidden");
     }
 
     [Fact]

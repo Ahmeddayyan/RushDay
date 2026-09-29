@@ -12,7 +12,8 @@ namespace RushDay.Infrastructure.Caching;
 /// are not deleted and had not expired when the entry was filled. Like <c>publications:brief</c>, the entry holds the
 /// rows, not the answer: which are visible is decided against the caller's clock on every read, so a scheduled
 /// announcement appears at its instant exactly. Invalidated by the announcement mutations (<c>AnnouncementService</c>)
-/// and by results publication with <c>announce</c> (S6).
+/// and by results publication with <c>announce</c> (S6); the key is generation-versioned
+/// (<see cref="CacheKeys.GetOrCreateVersionedAsync{T}"/>), so a deleted announcement cannot come back from an in-flight fill.
 /// </summary>
 public sealed class AnnouncementCache(HybridCache cache, IDbContextFactory<RushDayDbContext> contexts, ICacheMetrics metrics, TimeProvider clock)
 {
@@ -21,7 +22,7 @@ public sealed class AnnouncementCache(HybridCache cache, IDbContextFactory<RushD
     /// <summary>The university announcements visible at <paramref name="now"/>, pinned first, then newest first.</summary>
     public async ValueTask<IReadOnlyList<AnnouncementRecord>> GetVisibleAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
     {
-        var holder = await cache.GetOrCreateAsync(
+        var holder = await cache.GetOrCreateVersionedAsync(
             metrics,
             CacheKeys.UniversityAnnouncements,
             CacheKeys.UniversityAnnouncements,
@@ -33,7 +34,7 @@ public sealed class AnnouncementCache(HybridCache cache, IDbContextFactory<RushD
     }
 
     public ValueTask InvalidateAsync(CancellationToken cancellationToken = default) =>
-        cache.RemoveAsync(CacheKeys.UniversityAnnouncements, cancellationToken);
+        cache.InvalidateVersionedAsync(CacheKeys.UniversityAnnouncements, cancellationToken);
 
     // Its own context: the fill may outlive the request that started it (04-performance-and-ops.md section 4).
     private async Task<AnnouncementRecord[]> LoadAsync(CancellationToken cancellationToken)

@@ -15,10 +15,13 @@ namespace RushDay.IntegrationTests.Student;
 [Collection(ApiCollection.Name)]
 public sealed class ExportTests(RushDayApiFactory factory)
 {
+    /// <summary>
+    /// <c>GradeResult</c> (02-api.md section 7): what the student sees. No <c>status</c>, <c>version</c> or
+    /// <c>visibleToStudent</c>: they describe states the student never sees (review S4 D4, T6).
+    /// </summary>
     private static readonly string[] GradeProperties =
     [
-        "moduleCode", "moduleTitle", "credits", "semester", "academicYear", "outcome", "mark", "status", "publishedAt",
-        "visibleToStudent", "version", "correctedAt",
+        "moduleCode", "moduleTitle", "credits", "semester", "academicYear", "outcome", "mark", "publishedAt", "correctedAt",
     ];
 
     private static readonly string[] EnrolmentProperties =
@@ -65,9 +68,8 @@ public sealed class ExportTests(RushDayApiFactory factory)
         Assert.All(grades, g =>
         {
             Assert.Equal(GradeProperties.Order(), g.EnumerateObject().Select(p => p.Name).Order());
-            Assert.Equal("published", g.GetProperty("status").GetString());
-            Assert.True(g.GetProperty("visibleToStudent").GetBoolean());
             Assert.Equal(StudentData.PreviousYear, g.GetProperty("academicYear").GetString());
+            Assert.NotEqual(JsonValueKind.Null, g.GetProperty("publishedAt").ValueKind);
         });
         Assert.DoesNotContain(grades, g => g.GetProperty("moduleCode").GetString() == "ZZ1301");
         Assert.True(body.GetProperty("weightedAverage").GetDouble() > 0);

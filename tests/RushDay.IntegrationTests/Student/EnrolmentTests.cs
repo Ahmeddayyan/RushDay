@@ -374,6 +374,132 @@ public sealed class EnrolmentTests(RushDayApiFactory factory)
         Assert.All(duration.GetMeasurementSnapshot(), m => Assert.True(m.Value > 0));
     }
 
+    /// <summary>
+    /// Review S4 D1: a module code must be two ASCII letters and four ASCII digits (white space around it allowed), so a
+    /// NUL character, a non-ASCII digit or any other malformed body is 400 <c>validation</c> before a query runs; a NUL
+    /// once reached PostgreSQL (22021) and answered 500.
+    /// </summary>
+    [Fact]
+    public async Task Malformed_module_codes_are_validation_problems_never_500()
+    {
+        using var client = await factory.LoginStudentAsync("S000032");
+        string[] bodies =
+        [
+            "{\"moduleCode\":\"CS3099\\u0000\"}",
+            "{\"moduleCode\":\"CS30\\u000099\"}",
+            "{\"moduleCode\":\"\\u0000\"}",
+            "{\"moduleCode\":\"CS\\uFF13\\uFF10\\uFF19\\uFF19\"}",
+            "{\"moduleCode\":\"CS\\u0663\\u0660\\u0669\\u0669\"}",
+            "{\"moduleCode\":\"CS 3099\"}",
+            "{\"moduleCode\":\"CS30999\"}",
+            "{\"moduleCode\":\"cs' OR 1=1 --\"}",
+            "{\"moduleCode\":\"%\"}",
+            "{\"moduleCode\":\"   \"}",
+            "{\"moduleCode\":123}",
+            "{\"moduleCode\":null}",
+            "{}",
+            "[]",
+        ];
+
+        foreach (var json in bodies)
+        {
+            using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            using var response = await client.PostAsync("/api/me/enrolments", content);
+            var problem = await response.ReadJsonAsync();
+            Assert.True(response.StatusCode == HttpStatusCode.BadRequest, $"{json} answered {(int)response.StatusCode}: {problem}");
+            Assert.Equal("urn:rushday:validation", problem.GetProperty("type").GetString());
+        }
+
+        Assert.Null(await factory.EnrolmentAsync("S000032", "CS3099"));
+    }
+
+    /// <summary>
+    /// Review S4 D3: route constraints use <c>[0-9]</c>, so a path whose "digits" are Arabic-Indic or full-width is no
+    /// module code at all and falls through to the <c>/api</c> 404 <c>not-found</c> (with <c>\d</c> it reached the
+    /// handlers and answered <c>module-not-found</c> or <c>not-enrolled</c>).
+    /// </summary>
+    [Fact]
+    public async Task Non_ascii_digits_in_a_module_path_are_not_a_module_code()
+    {
+        using var client = await factory.LoginStudentAsync("S000033");
+        foreach (var path in new[] { "/api/modules/CS%D9%A3%D9%A0%D9%A9%D9%A9", "/api/modules/CS%EF%BC%93%EF%BC%90%EF%BC%99%EF%BC%99" })
+        {
+            using var response = await client.GetAsync(path);
+            await response.AssertProblemAsync(HttpStatusCode.NotFound, "not-found");
+        }
+
+        using (var withdraw = await client.DeleteAsync("/api/me/enrolments/CS%D9%A3%D9%A0%D9%A9%D9%A9"))
+        {
+            await withdraw.AssertProblemAsync(HttpStatusCode.NotFound, "not-found");
+        }
+
+        // ASCII codes still match in either case.
+        using var lower = await client.GetAsync("/api/modules/cs3099");
+        Assert.Equal(HttpStatusCode.OK, lower.StatusCode);
+    }
+
+    /// <summary>
+    /// Review S4 D2: a grade's year is always its enrolment's year (01-domain-and-data.md section 3). Reactivating a row
+    /// from an earlier academic year deletes that module's Draft grade for the student in the same transaction (a Draft
+    /// is all <c>results-exist</c> lets through) and says so in the audit row; a same-year re-enrolment keeps its draft.
+    /// </summary>
+    [Fact]
+    public async Task Re_enrolling_from_an_earlier_year_discards_its_draft_but_a_same_year_re_enrolment_keeps_it()
+    {
+        await factory.CreateModuleAsync("ZZ1110", Semester.Spring, capacity: 10, credits: 5);
+        await factory.CreateModuleAsync("ZZ1111", Semester.Spring, capacity: 10, credits: 5);
+
+        // Earlier year: a withdrawn 2025/26 row with a Draft mark of 12.
+        const string returning = "S000030";
+        await factory.InsertEnrolmentAsync(returning, "ZZ1110", StudentData.PreviousYear, EnrolmentStatus.Withdrawn);
+        await factory.PutGradeAsync(returning, "ZZ1110", GradeStatus.Draft, 12);
+        using (var client = await factory.LoginStudentAsync(returning))
+        using (var enrol = await client.EnrolAsync("ZZ1110"))
+        {
+            Assert.Equal(HttpStatusCode.Created, enrol.StatusCode);
+        }
+
+        var row = (await factory.EnrolmentAsync(returning, "ZZ1110"))!;
+        Assert.Equal((EnrolmentStatus.Active, StudentData.CurrentYear), (row.Status, row.AcademicYear));
+        Assert.Null(await GradeAsync(returning, "ZZ1110"));
+        var created = Assert.Single(await AuditAsync(row.Id, AuditActions.EnrolmentCreated));
+        Assert.True(JsonDocument.Parse(created).RootElement.GetProperty("discardedDraft").GetBoolean());
+
+        // Same year: enrol, a lecturer drafts 40, withdraw and enrol again; the draft is this year's and stays.
+        const string wavering = "S000031";
+        using var second = await factory.LoginStudentAsync(wavering);
+        using (var enrol = await second.EnrolAsync("ZZ1111"))
+        {
+            Assert.Equal(HttpStatusCode.Created, enrol.StatusCode);
+        }
+
+        await factory.PutGradeAsync(wavering, "ZZ1111", GradeStatus.Draft, 40);
+        using (var withdraw = await second.WithdrawAsync("ZZ1111"))
+        {
+            Assert.Equal(HttpStatusCode.NoContent, withdraw.StatusCode);
+        }
+
+        factory.Clock.Advance(TimeSpan.FromSeconds(1));
+        using (var again = await second.EnrolAsync("ZZ1111"))
+        {
+            Assert.Equal(HttpStatusCode.Created, again.StatusCode);
+        }
+
+        Assert.Equal("Draft/40", await GradeAsync(wavering, "ZZ1111"));
+        var sameYear = (await factory.EnrolmentAsync(wavering, "ZZ1111"))!;
+        Assert.All(await AuditAsync(sameYear.Id, AuditActions.EnrolmentCreated), d => Assert.False(JsonDocument.Parse(d).RootElement.TryGetProperty("discardedDraft", out _)));
+    }
+
+    /// <summary>The grade of (student, module) as <c>Status/Mark</c>, or null when there is none.</summary>
+    private Task<string?> GradeAsync(string studentNumber, string code) =>
+        factory.WithDbAsync(async db =>
+        {
+            var studentId = await db.Students.Where(s => s.StudentNumber == studentNumber).Select(s => s.Id).SingleAsync();
+            var moduleId = await db.Modules.Where(m => m.Code == code).Select(m => m.Id).SingleAsync();
+            var grade = await db.Grades.AsNoTracking().Where(g => g.StudentId == studentId && g.ModuleId == moduleId).Select(g => new { g.Status, g.Mark }).SingleOrDefaultAsync();
+            return grade is null ? null : $"{grade.Status}/{grade.Mark}";
+        });
+
     /// <summary>The <c>details</c> of the audit rows of an enrolment with the given action, as stored (jsonb text).</summary>
     private Task<List<string>> AuditAsync(Guid enrolmentId, string action) =>
         factory.WithDbAsync(db => db.AuditEvents.AsNoTracking()

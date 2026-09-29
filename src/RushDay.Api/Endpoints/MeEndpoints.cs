@@ -19,7 +19,12 @@ namespace RushDay.Api.Endpoints;
 /// </summary>
 public static class MeEndpoints
 {
-    public const string ModuleCodeRoute = "{code:regex(^[A-Z]{{2}}\\d{{4}}$)}";
+    /// <summary>
+    /// The module-code route constraint of 02-api.md section 1. Digits are <c>[0-9]</c>: .NET's <c>\d</c> matches every
+    /// Unicode decimal digit (Arabic-Indic, full-width), which would route such a path to the handler instead of the
+    /// <c>/api</c> fallback's 404 <c>not-found</c>.
+    /// </summary>
+    public const string ModuleCodeRoute = "{code:regex(^[A-Z]{{2}}[0-9]{{4}}$)}";
 
     public static RouteGroupBuilder MapMeEndpoints(this RouteGroupBuilder api)
     {

@@ -162,6 +162,10 @@ the `data_protection_keys` table, encrypted at rest with AES-256-GCM under this 
 and base64-encode them — **do not** use `Get-Random`, which is not a cryptographic RNG:
 
 ```powershell
+# Windows PowerShell 5.1 and PowerShell 7 alike:
+$b = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
+
+# PowerShell 7 only (the static overload does not exist on .NET Framework):
 [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 ```
 

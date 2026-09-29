@@ -228,12 +228,11 @@ retention windows change). To rehearse a restore:
 
 ### Restore rehearsal record
 
-*(Filled in during stage S13 — `06-implementation-plan.md` step 3: date, outcome, and the measured restore window
-the free plan offered on that day.)*
+Rehearsed by the owner in the Neon console and verified with a row count on the restored branch.
 
 | Date | Outcome | Restore window offered by the free plan on that day |
 |---|---|---|
-| *(pending)* | *(pending)* | *(pending — confirmed in the Neon console at rehearsal time, not assumed)* |
+| 2026-09-29 | Success. In the Neon console, a new branch `restore-rehearsal` was created from `production` using "Branch data and schema from a past point in time", set about one hour back. On that branch, `SELECT count(*) FROM students` returned 20,000, the full seeded cohort. The branch was created with auto-delete after one day; production was never touched. | At least one hour of history was available and used; the maximum window was not probed on the day. |
 
 Because Data Protection keys live in `data_protection_keys` inside the same database, restoring the database also
 restores session continuity, as long as the `DataProtection:KeyEncryptionKey` environment variable itself is kept

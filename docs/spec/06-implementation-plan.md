@@ -302,6 +302,32 @@ without locking module rows first); the reconcile route and the settings year ch
 `StartupBackfills.ReconcileEnrolledCountAsync` (the year change after its settings `UPDATE`), never the two statements
 on their own; module mutations invalidate `catalogue:all` and settings changes `settings` after the commit.
 
+**From the S6 review** (recorded after the fix pass; 02 sections 1, 4, 6, 7, 8.3-8.5, 01 sections 3, 5a, 6, 9, 03 section
+7, 04 sections 2-4 and 7):
+- No stranded mark (E1): `MarksStatus.entered` counts, once a module has left draft, only Submitted or Published
+  grades, so a Draft on an active enrolment is `missing` and the module is not publishable; nobody joins a module whose
+  marks for the year have left draft (409 `module-locked`, self or override, under the module's marks lock taken
+  shared); a publish takes its candidates' marks locks and re-reads their status. Chosen over "reopen the student's
+  marking" as the smallest rule that keeps every mark reachable (return to draft, then enrol).
+- Publications (E2, E3, E9): `results_publications.announcement_id` links the "results are available" announcement,
+  which a reschedule moves and a cancel, an unpublish or an emptying return to draft deletes; an emptied scheduled
+  publication is deleted (`results.cancelled` with `returnedToDraft`); return to draft locks publication rows before
+  grade rows. A correction that changes nothing is 400 `validation` (E12).
+- Registry (E4-E8, E10, J1): trim counts real enrolments under the students' locks and repairs the counter; lecturers
+  who have left have no authority and, like students who have left, get no account (409 `principal-left`); a demo
+  actor cannot rename a real login through a record edit; the semester is pinned by any enrolment or grade of any year;
+  a leave keeps enrolments that hold results; a unique index allows one leader; trim and leave call
+  `WithdrawManyAsync`.
+- Platform (E11, E13-E16, J2-J5): null list elements, integer enum values and pages beyond row 10,000 are 400
+  `validation`; the roster CSV is audited (`roster.exported`); `ANALYZE` after a start that migrated or backfilled; the
+  reconcile route's pre-lock is `FOR NO KEY UPDATE`; `AnnouncementWriteScope` replaces the nullable module id; the MFA
+  code is `^[0-9]{6}$`; windows, publications and lecturer-module caches are generation-versioned. J6 (the admin
+  export's web type) belongs to the UI pass; J7 (the Kelvin sign) is accepted and documented.
+- Schema: the additive migration `20261002120000_ResultsGovernance` (01 section 5a); `PortalAndIdentity` is unchanged.
+- Tests: `Staff/ResultsGovernanceTests`, `RegistryRulesTests`, `StaffConcurrencyTests`, `PlatformFixTests` and the unit
+  `Grades/MarksStatusTests`, each failing on 93a2029 for the reason it names (except the leave race, which that base
+  already ordered correctly).
+
 **Owns**
 - `src/RushDay.Infrastructure/Grades/{MarksService,ResultsPublicationService}.cs` (publication, reschedule, cancel, unpublish, return to draft, correction), `Infrastructure/Queries/{RosterQuery,MarksSheetQuery,AdminStudentQuery,AdminResultsQuery,AuditQuery,OverviewQuery}.cs`, `Infrastructure/Modules/ModuleAdminService.cs` (create, update with the capacity and semester guards, lecturers, trim), `Infrastructure/Settings/SettingsService.cs` (year change reconciles), `Infrastructure/Enrolments/EnrolmentWindowAdminService.cs`, `Infrastructure/Students/StudentAdminService.cs` (create, update, leave), `Infrastructure/Lecturers/LecturerAdminService.cs` (create, update, leave), `Infrastructure/Audit/AuditCsvWriter.cs`, `Infrastructure/Ops/{ReconcileService,DemoResetService}.cs`.
 - `src/RushDay.Api/Endpoints/{LecturerEndpoints,AdminOverviewEndpoints,AdminSettingsEndpoints,AdminWindowEndpoints,AdminResultsEndpoints,AdminStudentEndpoints,AdminModuleEndpoints,AdminLecturerEndpoints,AdminAccountEndpoints,AdminAnnouncementEndpoints,AdminAuditEndpoints,AdminOpsEndpoints}.cs` (`AdminModuleEndpoints` includes the read-only roster and marks routes; `AdminOpsEndpoints` maps `demo-reset` only when `Demo:Enabled`), `Contracts/{Lecturer,AdminOverview,AdminSettings,AdminResults,AdminStudents,AdminModules,AdminLecturers,AdminAccounts,AdminAudit,AdminOps}.cs`.

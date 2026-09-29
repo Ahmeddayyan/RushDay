@@ -45,6 +45,9 @@ BEGIN (ReadCommitted)
                 WHERE e.student_id = @student AND e.status = 'Active' AND e.academic_year = @currentYear AND m.semester = @semester
 5  decision   = EnrolmentRules.Evaluate(module, module.EnrolledCount, credits, alreadyEnrolled: current, windowOpen, ignoreCreditLimit: Override)
    if decision != Accepted → ROLLBACK, map to 409/422
+5b SELECT pg_advisory_xact_lock_shared(RDMK, hashtext(@module))   -- the module's marks lock, shared (review S6 E1)
+   EXISTS a Submitted or Published grade on an active enrolment of @currentYear on the module
+     → ROLLBACK → 409 module-locked   (nobody joins a module whose marks have left draft, 02-api.md section 8.3)
 6  if existing is not null (Withdrawn, or Active in an earlier year without a result):
        UPDATE enrolments SET status='Active', enrolled_at=@now, withdrawn_at=NULL, source=@source, academic_year=@currentYear,
               created_by_user_id=@actor, updated_at=@now
@@ -82,7 +85,8 @@ COMMIT → 201 { moduleCode, enrolledAt, placesRemaining = capacity - enrolled_c
 ```
 
 Metrics: `rushday.enrolments.accepted`, `rushday.enrolments.rejected{reason=module_full|already_enrolled|window_closed|credit_limit|results_exist|student_left|module_inactive}`,
-`rushday.enrolments.duration` (ms).
+`rushday.enrolments.duration` (ms). Step 5b's `module-locked` is not a rush outcome and has no reason tag (like
+`module-not-found`).
 
 Mechanism for step 8: EF Core's `SqlQuery`/`SqlQueryRaw` wraps SQL in a subquery and PostgreSQL rejects a
 data-modifying statement inside one, and `ExecuteSqlAsync` returns only a row count, so step 8 runs as an
@@ -108,7 +112,12 @@ rows impossible regardless of ordering, and the conditional reactivation update 
 Lock order is always student (`FOR NO KEY UPDATE`) → settings row (`FOR SHARE`) → enrolment → module (`FOR NO KEY
 UPDATE`, which admits the `FOR KEY SHARE` of other enrolments' foreign-key checks) in enrolment, withdrawal and bulk
 withdrawal alike, and a module row is locked only by the last statements, so there is no deadlock
-(`EnrolmentLockingTests`, `BulkWithdrawalTests`). The year read under the share lock ties the stamped year and the
+(`EnrolmentLockingTests`, `BulkWithdrawalTests`). Step 5b's advisory lock sits between the settings row and the
+enrolment: shared locks never wait for one another, so a rush is not serialised by it (the concurrency test still sees
+30 × 201 and 170 × 409), and its exclusive holders (a marks save, submit, return to draft or publish of the module,
+`ModuleMarksLock`) take no student, settings or module row lock that an enrolment could be holding, so they never wait
+for an enrolment in a cycle. The check reads the module's grades through `(module_id, status)`: nothing for a module
+without marks (the rush's), about 1,400 index probes for a module with a year of published history like `CS3001`. The year read under the share lock ties the stamped year and the
 claimed count together: a year change (its settings `UPDATE`, then the reconciliation, section 2.3) either commits
 before the enrolment reads the year or waits for the enrolment to commit.
 
@@ -135,9 +144,19 @@ The windows (for step 3) and the cached year are read before the transaction, as
 withdraws one row: in its own transaction, or under a savepoint in a caller's.
 
 `POST /api/admin/modules/{code}/trim-to-capacity` (current-year active rows, latest `enrolled_at` first) and
-`POST /api/admin/students/{n}/leave` (current-year active rows) call `WithdrawManyAsync(targets, actor, WithdrawOptions
-{ Override: true, Reason, Trim | Left })` once, inside the route's transaction, with the (student, module) pairs to
-withdraw. It keeps the single-row lock order across rows and takes no savepoint:
+`POST /api/admin/students/{n}/leave` (current-year active rows without a Submitted or Published grade) call
+`WithdrawManyAsync(targets, actor, WithdrawOptions { Override: true, Reason, Trim | Left })` once, inside the route's
+transaction, with the (student, module) pairs to withdraw (joint item J1; they used to loop over `WithdrawAsync`). Before
+choosing its targets, the **trim** locks every student holding one of the year's places on the module (`SELECT s.id FROM
+students s WHERE s.id IN (the module's active enrolments of the year) ORDER BY s.id FOR NO KEY UPDATE`, the first lock of
+an enrolment or a withdrawal), reads the year under the share lock, and counts the **real** active enrolments: the excess
+is that count minus capacity, never the stored `enrolled_count`, which may have drifted (review S6 E4: a counter of 7
+for 4 students withdrew 2 from a module of capacity 5). With those students locked no withdrawal can change the count
+before the bulk statement; after it, with the module row locked last, the trim sets `enrolled_count` to the real count,
+repairing any drift. The **leave** locks the student (`FOR NO KEY UPDATE`), then takes the marks lock of each of the
+student's current-year modules **shared** (module-id order), so no submit turns a draft into a submitted mark between
+its "no results" filter and the withdrawal (review S6 E8). `WithdrawManyAsync` keeps the single-row lock order across
+rows and takes no savepoint:
 
 ```
 1  SELECT id FROM students WHERE id = ANY(@students) ORDER BY id FOR NO KEY UPDATE      -- every target student, id order
@@ -173,7 +192,10 @@ settings `UPDATE`; else its own): `SELECT id FROM modules ORDER BY id FOR NO KEY
 enrolment or withdrawal that has changed a count and not committed, then the two `UPDATE`s as fresh statements whose
 snapshots include those commits. Without the lock the counting subquery's snapshot predated the commit the `UPDATE`
 waited for, and a stale count overwrote the committed one (review S4 C4: 5 counted for 3 rows became 3 counted for 4).
-Callers use the method, never the two statements on their own. The integration test
+Callers use the method, never the two statements on their own. The reconcile route (`ReconcileService`) reads the
+"before" counts under the same `FOR NO KEY UPDATE` lock, in the same order, just before calling it; it took `FOR UPDATE`
+until joint item J2, which also blocked the foreign-key check (`FOR KEY SHARE`) of every enrolment insert while it ran
+(`StaffConcurrencyTests.Reconcile_does_not_block_enrolment_inserts`). The integration test
 `EnrolmentConcurrencyTests` creates its own module directly through `RushDayDbContext` in the test (`ZZ3001`, spring,
 capacity 30, 15 credits, department `ZZ`, active; the admin route arrives only in S6) and invalidates
 `catalogue:all`, so it is independent of `EnrolmentTests` (which
@@ -208,6 +230,13 @@ trips does not depend on the number of rows a student or module has. `currentYea
 
 The 15-query v0 dashboard remains in git history at tag `v0-naive` for the before/after comparison.
 
+Every `MarksStatus` (the lecturer module list, the marks sheet's summary, `GET /api/admin/results`, the overview and the
+publish itself) comes from one grouped query, `MarksStatusQuery` (`enrolments e LEFT JOIN grades g ... WHERE
+e.status = 'Active' AND e.academic_year = @year GROUP BY e.module_id`), which also counts the Draft grades per module
+(`count(*) FILTER (WHERE g.status = 'Draft')`) so that `entered` follows the stage rule of `02-api.md` section 7 (review
+S6 E1) at no extra round trip. The lecturer lookups join `lecturers` for `left_at IS NULL` (review S6 E5), a primary-key
+probe per assignment. `GET /api/lecturer/modules/{code}/roster.csv` adds one audit insert.
+
 ## 4. Caching (in-process only)
 
 `Microsoft.Extensions.Caching.Hybrid` 10.10.0 with **no** distributed backend (`HybridCache` gives stampede protection
@@ -219,18 +248,20 @@ and typed entries; the L2 is simply not registered). Every entry is small (the c
 | `windows:all` | all `enrolment_windows` rows | 60 s | window mutations |
 | `settings` | `academic_settings` row | 60 s | `PUT /api/admin/settings` (which also invalidates `catalogue:all` and `windows:all` when the year changes) |
 | `publications:brief` | `{ next: PublicationBrief \| null, latest: PublicationBrief \| null }` (earliest future `publish_at`; latest past) | 60 s | publish, reschedule, cancel, unpublish, return-to-draft |
-| `announcements:university` | visible university announcements | 30 s | admin announcement mutations, publish with `announce` |
-| `lecturer-modules:{lecturerId}` | module codes assigned | 60 s | `PUT /api/admin/modules/{code}/lecturers` |
+| `announcements:university` | visible university announcements | 30 s | admin announcement mutations, publish with `announce`, reschedule, cancel, unpublish, return-to-draft (a publication's announcement moves or goes with it) |
+| `lecturer-modules:{lecturerId}` | module codes assigned (none for a lecturer who has left) | 60 s | `PUT /api/admin/modules/{code}/lecturers`, the lecturer's leave |
 | `public-status` (OutputCache, named policy `PublicStatusCachePolicy`) | `GET /api/public/status` body | 10 s | time |
 
-**Versioned keys** (review S4 C3, C11, D5): `settings`, `catalogue:all` and `announcements:university` are read and
+**Versioned keys** (review S4 C3, C11, D5; joint item J5): every key of the table but `public-status` is read and
 invalidated through `CacheKeys.GetOrCreateVersionedAsync` and `InvalidateVersionedAsync`. The entry lives under
 `{key}:v{generation}`; invalidation advances the generation (one counter per key per `HybridCache` instance) and then
 removes the retired entry, so a fill that was in flight at the change, and may have read the rows before the commit,
 stores its value under a key no reader uses any more. `HybridCache.RemoveAsync` alone does not stop an in-flight fill,
 which then served the pre-change value for its whole lifetime (a stale year for 60 s, a deleted announcement for 30 s).
-Invalidation runs after the change has committed. `windows:all`, `publications:brief` and `lecturer-modules:*` still
-invalidate with `RemoveAsync` (an in-flight fill can outlive their invalidation by up to one lifetime). Correctness of
+Invalidation runs after the change has committed (a service that writes inside a caller's transaction, like
+`AnnouncementService` inside a publish, leaves the invalidation to the caller). `windows:all`, `publications:brief` and
+`lecturer-modules:*` moved to versioned keys with joint item J5: a lecturer removed from a module could otherwise keep it
+for up to 60 s after an in-flight fill (`PlatformFixTests`). Correctness of
 enrolment never depends on a cache: the year is read under a share lock and capacity is decided by the claim (section
 2.1), which also covers a second instance during Render's deploy overlap, whose caches are its own.
 
@@ -402,7 +433,11 @@ derives the plain-language health summary from `shed503`, `status5xx` and the `w
   migrate (on `ConnectionStrings:Migrations` when set) → key-ring check outside Development (plaintext keys revoked, an
   encrypted default key ensured; `03-security.md` T18) → seed **only in demo mode or under `--migrate-and-seed`** →
   backfills, each logged with elapsed time and every statement under `Database:StartupCommandTimeoutSeconds` (section
-  5); a failure aborts startup so Render keeps the previous instance running (its deploy health check never passes).
+  5) → `ANALYZE` of the tables a migration or the backfills rewrite, only when this start applied a migration or a
+  backfill wrote rows (`StartupBackfills.AnalyzeAsync`, on the owner connection when there is one; about 0.6 s on the
+  demo data; review S6 E16: without it the admin results query ran 180 ms with an on-disk sort until autovacuum caught
+  up, 56 ms after); a failure aborts startup so Render keeps the previous instance running (its deploy health check
+  never passes; a failed `ANALYZE` is only logged).
   `Database:MigrateOnStartup` and `Database:BackfillOnStartup` default to true outside Development (`render.yaml` sets
   both anyway). Under `--migrate-and-seed` the process exits after the backfills.
 - Logging: JSON console in Production (no scopes, `03-security.md` section 6) with `traceId`, `userId`, `role`,

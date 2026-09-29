@@ -172,13 +172,15 @@ Exact rules:
   admin action that is itself audited and drops and recreates the trigger inside its own transaction.
 - Bulk reads of personal data are audited as reads: `audit.exported` is written and committed before the CSV starts
   streaming; `student.viewed` on every `GET /api/admin/students/{n}`; `student.exported` / `student.exported_self` on
-  the JSON exports. Login successes and failures are metrics, not audit rows (volume); lockouts are audited.
+  the JSON exports; `roster.exported` on the lecturer's roster CSV (review S6 E15), committed before the file is sent.
+  Login successes and failures are metrics, not audit rows (volume); lockouts are audited.
 - `details` holds small JSON only (before/after values, reason, decision flags); never marks of other students, never
   passwords, never raw addresses.
 - Should: `chain_hash` per row (`01-domain-and-data.md` section 3) for tamper evidence; `GET /api/admin/audit/verify`
   walks the chain and reports the first break.
 
-Action catalogue (`Domain/Audit/AuditActions.cs`; subject from `AuditSubjects`):
+Action catalogue (`Domain/Audit/AuditActions.cs`; subject from `AuditSubjects`; 49 actions, `AuditActionsTests` asserts
+the set; `roster.exported` was added by the S6 review):
 
 | Action | Subject | Details |
 |---|---|---|
@@ -196,16 +198,17 @@ Action catalogue (`Domain/Audit/AuditActions.cs`; subject from `AuditSubjects`):
 | `module.returned_to_draft` | Module | `{ reason, gradeCount, academicYear, fromScheduledPublication }` |
 | `results.published` | Publication | `{ academicYear, semester, publishAt, modules, grades, excluded: [codes], announced }` |
 | `results.rescheduled` | Publication | `{ before, after }` |
-| `results.cancelled` | Publication | `{ academicYear, semester, grades }` |
+| `results.cancelled` | Publication | `{ academicYear, semester, grades, returnedToDraft? }` (`returnedToDraft`: the module whose return to draft emptied a scheduled publication, which is then deleted with `grades: 0`) |
 | `results.unpublished` | Publication | `{ academicYear, semester, grades, reason }` |
-| `announcement.created` / `updated` / `deleted` | Announcement | `{ scope, moduleCode, title }` |
+| `announcement.created` / `updated` / `deleted` | Announcement | `{ scope, moduleCode, title }` (also written when a publication's announcement is moved by a reschedule or deleted with a cancel, an unpublish or an emptying return to draft) |
 | `account.provisioned` | Account | `{ username, role, studentNumber, staffNumber }` |
 | `account.locked` / `unlocked` / `disabled` / `enabled` / `password_reset` / `mfa_reset` | Account | `{ username }` |
 | `settings.changed` | Settings | `{ before: {...}, after: {...} }` |
 | `window.created` / `updated` / `deleted` | Window | `{ academicYear, semester, before, after }` |
 | `module.created` / `updated` | Module | `{ before, after, reason? }` |
 | `module.lecturers_set` | Module | `{ before: [staffNumbers], after: [staffNumbers] }` |
-| `module.trimmed` | Module | `{ reason, withdrawn: [studentNumbers] }` |
+| `module.trimmed` | Module | `{ reason, withdrawn: [studentNumbers], enrolledCount: { before, after } }` |
+| `roster.exported` | Module | `{ moduleCode, academicYear, rowCount }` |
 | `student.created` / `updated` / `left` | Student | `{ studentNumber, before?, after?, reason? }` |
 | `student.viewed` | Student | `{ studentNumber }` |
 | `student.exported` / `student.exported_self` | Student | `{ studentNumber }` |

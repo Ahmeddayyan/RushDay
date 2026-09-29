@@ -1,6 +1,6 @@
 # RushDay v1 specification: 01. Domain and data
 
-Scope: entities, tables, columns, constraints, indexes, the single EF migration, the idempotent startup backfills
+Scope: entities, tables, columns, constraints, indexes, the EF migrations, the idempotent startup backfills
 that run against the already-populated Neon database, and the demo accounts. Decisions D1–D3, D7–D11, D17,
 D22, D24 and D27–D32 of `00-overview.md` apply.
 
@@ -77,8 +77,9 @@ has exactly one role.
 ### `students` (existing; changed)
 
 Add `email varchar(256) null` and `left_at timestamptz null` (set by `POST /api/admin/students/{n}/leave`; a student
-with `left_at` cannot be enrolled by anyone, 409 `student-left`). Everything else unchanged (`student_number
-varchar(16)` unique, `full_name`, `programme`, `year_of_study`).
+with `left_at` cannot be enrolled by anyone, 409 `student-left`, and gets no login: provisioning or re-enabling an
+account for them is 409 `principal-left`). Everything else unchanged (`student_number varchar(16)` unique, `full_name`,
+`programme`, `year_of_study`).
 
 ### `lecturers` (new)
 
@@ -90,7 +91,7 @@ varchar(16)` unique, `full_name`, `programme`, `year_of_study`).
 | title | varchar(16) not null | `Dr`, `Prof`, `Mr`, `Ms`, `Mx` |
 | department | varchar(8) not null | `CS`, `MA`, `PH`, `EE` |
 | email | varchar(256) null | |
-| left_at | timestamptz null | set by `POST /api/admin/lecturers/{staffNumber}/leave`; a lecturer with `left_at` cannot be assigned to a module (422 `invalid-lecturer-assignment`); existing assignments stay and are shown with a "left" badge |
+| left_at | timestamptz null | set by `POST /api/admin/lecturers/{staffNumber}/leave`; a lecturer with `left_at` cannot be assigned to a module (422 `invalid-lecturer-assignment`) and gets no account (409 `principal-left`); existing assignments stay and are shown with a "left" badge but carry no authority: every lecturer lookup (`TeachesModule`, `StaffModules.TaughtAsync`, the lecturer module list) requires `left_at IS NULL` (review S6 E5) |
 
 ### `module_lecturers` (new)
 
@@ -102,6 +103,7 @@ varchar(16)` unique, `full_name`, `programme`, `year_of_study`).
 | assigned_at | timestamptz not null | |
 | assigned_by_user_id | uuid null | FK `users(id)` RESTRICT; null = seed |
 | PK (module_id, lecturer_id); index `ix_module_lecturers_lecturer_id` | | exactly one `Leader` per module is a service rule; only the Leader may submit the module's marks (`02-api.md` section 8.4) |
+| Unique index `ix_module_lecturers_module_id_leader` on (module_id) WHERE `role = 'Leader'` | | migration `ResultsGovernance` (section 5a, review S6 E10): at most one leader per module at the database, whatever two concurrent assignments do; the assignment route also locks the module row first and saves demotions before the new leader |
 
 ### `modules` (existing; changed)
 
@@ -134,7 +136,9 @@ lowers `capacity` below `enrolled_count` is rejected (422 `capacity-below-enroll
 
 Kept: unique `ix_enrolments_student_id_module_id` (the row toggles status instead of being deleted, D10), `enrolled_at`.
 A reactivation stamps the current academic year on the row; a module the student already holds a Submitted or
-Published grade for cannot be reactivated (409 `results-exist`, D28), and reactivating a row from an earlier year deletes
+Published grade for cannot be reactivated (409 `results-exist`, D28), no enrolment or reactivation is made on a module
+whose marks for the current year have left draft (409 `module-locked`, `02-api.md` section 8.3, review S6 E1), and
+reactivating a row from an earlier year deletes
 that module's Draft grade for the student in the same transaction (`04-performance-and-ops.md` section 2.1 step 6), so a
 grade's year is always its enrolment's year.
 
@@ -200,11 +204,12 @@ Kept: unique `ix_grades_student_id_module_id`. A grade has no academic year of i
 | created_by_user_id | uuid null | FK `users(id)` RESTRICT; null = seed |
 | grade_count, module_count | integer not null | counts at publication time, decremented by return-to-draft while scheduled |
 | note | varchar(400) null | |
+| announcement_id | uuid null | FK `announcements(id)` ON DELETE SET NULL, index `ix_results_publications_announcement_id`; migration `ResultsGovernance` (section 5a, review S6 E2): the pinned "results are available" announcement a publish with `announce` posted, which a reschedule moves and a cancel, an unpublish or an emptying return to draft soft-deletes; null when the publish did not announce and for the seed publication |
 | Index `ix_results_publications_semester_created_at` (academic_year, semester, created_at DESC) | | |
 
 `state` is derived by reads: `scheduled` when `publish_at > now`, else `live`. Cancelling a scheduled publication or
-unpublishing a live one deletes the row after reverting its grades (`02-api.md` section 8.5); the audit row keeps the
-history.
+unpublishing a live one deletes the row after reverting its grades (`02-api.md` section 8.5), and so does a return to
+draft that takes the last grade out of a scheduled one (review S6 E3); the audit row keeps the history.
 
 ### `announcements` (new)
 
@@ -287,7 +292,7 @@ Lifecycle properties become settable (`{ get; set; }`); identity and natural-key
 | `Grades/Grade.cs` | `Mark` becomes `int?` and settable; `PublishedAt` becomes `DateTimeOffset?`; add `Outcome` (`GradeOutcome.Mark/Absent/Deferred`), `Status` (`GradeStatus.Draft/Submitted/Published`), `PublicationId?`, `EnteredByUserId?`, `SubmittedAt?`, `UpdatedAt`, `Version`, `CorrectedAt?` |
 | `Grades/GradeStatus.cs`, `Grades/GradeOutcome.cs` | new enums |
 | `Grades/Classification.cs` | `WeightedAverage` is unchanged and takes only graded results; add `Graded(IEnumerable<(GradeOutcome Outcome, int? Mark, int Credits)>)` returning the `(Mark, Credits)` pairs whose `Outcome == Mark` (absences and deferrals never count), and `Band(int mark)` = `FromAverage(mark)` (the band label of one mark) |
-| `Results/ResultsPublication.cs` | new entity |
+| `Results/ResultsPublication.cs` | new entity; `AnnouncementId?` (settable) since migration `ResultsGovernance` (section 5a) |
 | `Announcements/Announcement.cs`, `Announcements/AnnouncementScope.cs` | new |
 | `Audit/AuditEvent.cs`, `Audit/AuditActions.cs`, `Audit/AuditSubjects.cs` | new; `AuditEvent` carries `ChainHash?` (Should, unused until built); `AuditActions` and `AuditSubjects` are static classes of string constants covering exactly the catalogue of `03-security.md` section 7; `AuditActions.SubjectOf(action)` maps every action to its subject (unit-tested: every constant maps to a listed subject) |
 | `Settings/AcademicSettings.cs` | new: `Id`, `AcademicYear`, `InstitutionName`, `InstitutionShortName`, `TimeZone`, `CurrentSemester` (`Semester`, stored as integer), `SupportEmail?`, `SupportUrl?`, `UpdatedAt`, `UpdatedByUserId?` |
@@ -349,6 +354,36 @@ Model snapshot rule: the snapshot carries no default for `department`, `academic
 `enrolled_count` (0), `is_active` (true), `enrolments.status` (`Active`), `enrolments.source` (`Seed`), `grades.outcome`
 (`Mark`), `version` (1), `pinned` (false), `must_change_password` (false), `is_demo` (false).
 
+## 5a. The second migration: `20261002120000_ResultsGovernance` (review S6 E2, E10)
+
+`PortalAndIdentity` stays exactly as it was rehearsed; the S6 review's two schema changes are a small additive second
+migration, generated with `dotnet ef migrations add ResultsGovernance` after the model changes and renamed to the fixed
+timestamp like the first (`[Migration("20261002120000_ResultsGovernance")]`; `dotnet ef migrations list` shows it after
+`PortalAndIdentity`). `Up`, in order:
+
+1. `results_publications`: add `announcement_id uuid NULL`; create `ix_results_publications_announcement_id`.
+2. `UPDATE module_lecturers ml SET role = 'Teacher' WHERE ml.role = 'Leader' AND EXISTS (another Leader row of the
+   same module with a smaller (assigned_at, lecturer_id))`: a database that already holds a module with two leaders
+   (the race the index closes) keeps the one assigned first; no row is deleted. 0 rows on every rehearsed database.
+3. Create the unique index `ix_module_lecturers_module_id_leader` on `module_lecturers (module_id) WHERE role = 'Leader'`.
+4. Add `fk_results_publications_announcements_announcement_id` (`announcements(id)`, `ON DELETE SET NULL`:
+   announcements are only soft-deleted; the one hard delete, a module's cascade, never reaches a university announcement).
+
+`Down` drops the foreign key, both indexes and the column; it loses only the links (the announcements themselves stay)
+and a demoted second leader stays a teacher. Every statement is DDL or an `UPDATE` of a handful of rows; nothing
+touches the 80,000-row tables, so it runs in milliseconds on Neon. The model carries both (`ResultsPublication
+.AnnouncementId` with `HasOne<Announcement>().OnDelete(SetNull)`; `HasIndex(ModuleId).IsUnique().HasFilter("role =
+'Leader'")`), so the snapshot matches.
+
+Rehearsed on 2026-09-29 (section 9, with the Release single-file build): on a `TEMPLATE rushday` clone of the v0
+database (`InitialCreate` only, 154 v0 CS3099 rows) the first start applied both migrations and wrote 120,702 backfill
+rows, the second 0; every assertion of section 9 held, and the column, the foreign key and both indexes were present.
+`dotnet ef database update PortalAndIdentity` removed exactly the column and the two indexes; the `ResultsGovernance`
+part of the idempotent script re-applied them and was a no-op the second time; `dotnet ef database update
+InitialCreate` then left the v0 data intact (20,000 students, 80,000 grades, 80,254 enrolments). From an empty database
+the first start (seed, both migrations, backfills) and the second (0 rows) converged to the section 9 counts with
+`2026/27 100`.
+
 ## 6. Startup backfills (`Infrastructure/Seeding/StartupBackfills.cs`)
 
 Startup order in `Startup/StartupTasks.RunAsync` (also under `--migrate-and-seed`; until S2 creates `StartupTasks`,
@@ -403,6 +438,14 @@ every demo step's changes.
 | 11 | `demo_reset_hot_module` | always, demo | `UPDATE enrolments e SET status = 'Withdrawn', withdrawn_at = now(), updated_at = now() WHERE e.module_id = (SELECT id FROM modules WHERE code = 'CS3099') AND e.status = 'Active' AND e.source = 'Self' AND NOT EXISTS (SELECT 1 FROM grades g WHERE g.student_id = e.student_id AND g.module_id = e.module_id)` (the v0 rows relabelled by step 4 and every demo visitor's self-enrolment without a mark; admin overrides and anything a lecturer has marked are kept), then, when `n > 0`, one audit row `system.demo_reset { moduleCode: 'CS3099', withdrawn: n }` with a null actor. The same statement (plus step 13) is the body of the demo-only `POST /api/admin/ops/demo-reset` (`02-api.md` section 8.5). Because the free container restarts on every deploy and after idle spin-down, CS3099's 30 places come back regularly. |
 | 12 | `demo_autumn_cohort` | once, demo | Gives the demo lecturer a cohort to mark: `INSERT INTO enrolments (id, student_id, module_id, enrolled_at, status, source, academic_year, withdrawn_at, created_by_user_id, updated_at) SELECT gen_random_uuid(), s.id, m.id, now(), 'Active', 'Seed', @currentYear, NULL, NULL, NULL FROM (SELECT id FROM students WHERE year_of_study = 1 ORDER BY student_number LIMIT 100) s CROSS JOIN modules m WHERE m.code = 'CS3001' AND NOT EXISTS (SELECT 1 FROM enrolments e WHERE e.student_id = s.id AND e.module_id = m.id)` (`@currentYear` from `academic_settings`). Year-1 students never hold level-3 modules from 2025/26, so exactly 100 rows are inserted (`S000001`, `S000004`, …, `S000298`), each now carrying 15 autumn credits for 2026/27. No grades are created: CS3001 shows as `draft`, 0 entered, 100 missing for `L00001`. |
 | 13 | `reconcile_enrolled_count` | always, **last** | `UPDATE modules m SET enrolled_count = c.n FROM (SELECT e.module_id, count(*) n FROM enrolments e JOIN academic_settings s ON s.id = 1 AND e.academic_year = s.academic_year WHERE e.status = 'Active' GROUP BY e.module_id) c WHERE m.id = c.module_id AND m.enrolled_count <> c.n;` then `UPDATE modules m SET enrolled_count = 0 WHERE m.enrolled_count <> 0 AND NOT EXISTS (SELECT 1 FROM enrolments e JOIN academic_settings s ON s.id = 1 AND e.academic_year = s.academic_year WHERE e.module_id = m.id AND e.status = 'Active');` Logs any module where `enrolled_count > capacity` at Warning (data-quality item on the ops page; the administrator decides whether to raise capacity, trim to capacity or admin-withdraw). Both run in one transaction after `SELECT id FROM modules ORDER BY id FOR NO KEY UPDATE`, so neither counts from a snapshot older than a commit it waited for (`04-performance-and-ops.md` section 2.3). The lock and the two statements are `StartupBackfills.ReconcileEnrolledCountAsync(db)`, the body of `POST /api/admin/ops/reconcile`, and run inside `PUT /api/admin/settings` (after its settings update) when the academic year changes. It runs last so it sees every demo step's changes. |
+
+**Planner statistics** (review S6 E16): when a start applied a migration or any step wrote rows, `StartupTasks` runs
+`StartupBackfills.AnalyzeAsync` last (`ANALYZE users, user_roles, students, lecturers, modules, module_lecturers,
+enrolments, grades, results_publications, announcements, enrolment_windows, academic_settings`, a sample of each, about
+0.6 s on the demo data), on the owner connection when `ConnectionStrings:Migrations` is set. Without it the planner had
+no statistics for the new columns until autovacuum caught up, and the admin results query sorted on disk (180 ms instead
+of 56 ms). A role that does not own a table gets a PostgreSQL warning and the table is skipped; any failure is logged
+and ignored. A start that changes nothing (the usual restart) does not analyze.
 
 Step 8 insert SQL (parameters bound with Npgsql, never interpolated):
 
@@ -510,8 +553,15 @@ run only through `scripts/run-api.ps1` (`06-implementation-plan.md` section 1 ru
 4. `dotnet ef migrations script --idempotent -p src/RushDay.Infrastructure -s src/RushDay.Api -o $env:TEMP/rushday.sql`
    produces a script with no errors; review it for the DROP DEFAULT statements (`department`, `academic_year`,
    `grades.status`, `grades.updated_at`; **not** `source`), the trigger, and the absence of any `enrolled_count`
-   reconciliation. (`dotnet ef` runs through `dotnet exec` and works under Smart App Control; if it is ever blocked,
-   run it with `--no-build` against a Release build.)
+   reconciliation, and for the `ResultsGovernance` part (section 5a: the column, the leader demotion ending in `;`,
+   the two indexes, the foreign key). (`dotnet ef` runs through `dotnet exec` and works under Smart App Control; if it
+   is ever blocked, as it was for a freshly built Debug `RushDay.Domain.dll` on 2026-09-29, run it with `--no-build
+   --configuration Release`.) Known limitation, not changed because `PortalAndIdentity` stays as rehearsed: applied
+   through `psql`, the script stops at `PortalAndIdentity`'s `Sql("UPDATE modules SET department = left(code, 2)")`
+   block: that statement and the four `... DROP DEFAULT` ones (`department`, `academic_year`, `grades.status`,
+   `grades.updated_at`) have no terminating semicolon, so each generated `DO` block's `END IF` is a syntax error.
+   Every deployment migrates through `MigrateAsync`, which is unaffected; a DBA who applies the script by hand adds
+   those five semicolons first.
 5. `scripts/reset-db.ps1` (drop, recreate, `run-api.ps1 -Args "--migrate-and-seed"`) still converges to identical data
    from empty.
 6. Integration test `Persistence/MigrationOnSeededDatabaseTests` (stage S11) automates 1–3: applies `InitialCreate`,

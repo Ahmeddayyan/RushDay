@@ -8,9 +8,11 @@ D4–D6, D13, D15–D17, D25 and D27–D32 of `00-overview.md` apply. Data shape
 
 - Every route is under `/api`. Legacy `/students/*`, `/modules`, `/health` and the root JSON index are removed; the
   SPA fallback serves `index.html` for every non-`/api` GET (`05-frontend.md` section 4).
-- JSON: `PropertyNamingPolicy = CamelCase`; `JsonStringEnumConverter(JsonNamingPolicy.CamelCase)` so
-  `semester` is `"autumn" | "spring"`, `status` is `"draft" | "submitted" | "published"`, `outcome` is
-  `"mark" | "absent" | "deferred"`, `day` is `"monday"`..; nulls are emitted (`DefaultIgnoreCondition = Never`) so
+- JSON: `PropertyNamingPolicy = CamelCase`; `JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues:
+  false)` so `semester` is `"autumn" | "spring"`, `status` is `"draft" | "submitted" | "published"`, `outcome` is
+  `"mark" | "absent" | "deferred"`, `day` is `"monday"`..; members travel as names only, and a number or a numeric
+  string in a body (`"outcome": 1`, `"semester": "1"`, `"role": 0`) is 400 `validation`, never a silently chosen
+  member (review S6 E13); nulls are emitted (`DefaultIgnoreCondition = Never`) so
   shapes are stable; `MaxDepth = 16`; unknown members ignored. Role names are the Identity strings
   `"Student" | "Lecturer" | "Admin"`.
 - Instants are ISO-8601 UTC written with exactly three fractional digits (`2026-09-28T09:00:00.000Z`,
@@ -19,7 +21,10 @@ D4–D6, D13, D15–D17, D25 and D27–D32 of `00-overview.md` apply. Data shape
   offset or nothing for UTC), parsed with the invariant culture and normalised to UTC; any other token or text
   (`"not-a-date"`, `"28/09/2026 09:00"`, a number) is 400 `validation`.
 - Paged responses: `{ items: T[], page: number, pageSize: number, total: number }`; `page` starts at 1;
-  `pageSize` is clamped to 1..100 (roster and audit allow up to 200; marks up to 500).
+  `pageSize` is clamped to 1..100 (roster and audit allow up to 200; marks up to 500). A page may end at row 10,000 at
+  most: `page x pageSize` (with the clamped size) above 10,000 is 400 `validation` with `errors.page`
+  (`PageRequest.MaxRows`, review S6 E14), because an `OFFSET` that deep costs a full count and scan per page; the filters
+  (student, module, action, dates) and the CSV exports reach older rows, and the SPA's pagers stop at that page.
 - Request validation: .NET 10 minimal API validation (`builder.Services.AddValidation()`) with DataAnnotations on
   request records. Invalid input → 400 `HttpValidationProblemDetails`, `type = urn:rushday:validation`, `errors`
   keyed by camelCase property. Every free-text query parameter (`q`, `actor`, `action`) carries `[StringLength(100)]`.
@@ -27,7 +32,9 @@ D4–D6, D13, D15–D17, D25 and D27–D32 of `00-overview.md` apply. Data shape
   environment: `RouteHandlerOptions.ThrowOnBadRequest = false`, so Development does not turn it into a 500
   (`ProblemTypesTests.Unbindable_bodies_are_validation_problems`). Text PostgreSQL cannot store (a NUL character,
   SQLSTATE 22021) that gets past a validator is 400 `validation` too (the exception handler), never a 500; the
-  validators are meant to stop it first (`POST /api/me/enrolments` takes only an ASCII module code). Binding and validation run before the endpoint
+  validators are meant to stop it first (`POST /api/me/enrolments` takes only an ASCII module code). A list body with a
+  `null` element (`{"rows":[null]}`, `{"assignments":[null]}`) is 400 `validation` (`NoNullElementsAttribute`; minimal API
+  validation skips null items, so without it the handler dereferenced one: a 500, review S6 E11). Binding and validation run before the endpoint
   filters, so a malformed or invalid request answers 400 `validation` even without a valid antiforgery token or while a
   gate (section 2.3) would refuse it; neither discloses anything, and the filters still guard every request that binds.
 - Query parameters holding a semester (`GET /api/admin/results`) are bound through a `SemesterQuery` record with
@@ -37,7 +44,11 @@ D4–D6, D13, D15–D17, D25 and D27–D32 of `00-overview.md` apply. Data shape
   `{staffNumber:regex(^L[0-9]{{5}}$)}`, `{id:guid}`. Digits are `[0-9]` in every route constraint and body pattern,
   never `\d`, which in .NET matches every Unicode decimal digit (Arabic-Indic, full-width): a path with such digits is
   no code and answers the `/api` fallback's 404 `not-found`. Module codes and student numbers in bodies are
-  upper-cased server-side before lookup.
+  upper-cased server-side before lookup. Accepted (joint item J7): ASP.NET matches route constraints case-insensitively,
+  and under that comparison the Kelvin sign (U+212A) equals `K`, so a code written with it in place of `K` passes `[A-Z]`; the
+  handler upper-cases and looks up a code that no module has and answers 404 `module-not-found` (403 `not-your-module`
+  under `/api/lecturer`), exactly as for any unknown code. It reaches no other module's data and discloses nothing, so
+  no constraint change is made.
 - Mutations (POST, PUT, DELETE) require the antiforgery header (section 3) and are subject to the `write` or a more
   specific rate-limit policy (section 5). Three GET routes that stream personal data (`GET /api/admin/audit/export.csv`,
   `GET /api/me/export.json`, `GET /api/admin/students/{n}/export.json`) are also under `write`.
@@ -314,7 +325,7 @@ services.AddAntiforgery(o =>
 | `StudentOnly` | role `Student` and claim `student_id` present | 403 `forbidden` |
 | `LecturerOnly` | role `Lecturer` and claim `lecturer_id` present | 403 `forbidden` |
 | `AdminOnly` | role `Admin` | 403 `forbidden` |
-| `TeachesModule` | `TeachesModuleRequirement` evaluated by `TeachesModuleHandler` against route value `code`: passes when the caller has a `lecturer_id` claim and `LecturerModuleCache.GetCodesAsync(lecturerId)` (HybridCache 60 s, invalidated by `PUT /api/admin/modules/{code}/lecturers`) contains the code. Nobody else passes. Unknown code still evaluates the cache (empty set) so the answer is 403, never 404, for a non-member. Used only under `/api/lecturer`. | 403 `not-your-module` |
+| `TeachesModule` | `TeachesModuleRequirement` evaluated by `TeachesModuleHandler` against route value `code`: passes when the caller has a `lecturer_id` claim and `LecturerModuleCache.GetCodesAsync(lecturerId)` (HybridCache 60 s, generation-versioned, invalidated by `PUT /api/admin/modules/{code}/lecturers` and by the lecturer's leave) contains the code. Nobody else passes. Unknown code still evaluates the cache (empty set) so the answer is 403, never 404, for a non-member. A lecturer who has left (`lecturers.left_at` set) teaches nothing: the cache fill, `StaffModules.TaughtAsync` (every lecturer handler and `MarksService`) and `GET /api/lecturer/modules` all require `left_at IS NULL`, so their assignments stay on record (with `left: true`) but carry no authority (review S6 E5). Used only under `/api/lecturer`. | 403 `not-your-module` |
 
 There is no `Staff` policy. Structural rules that make cross-tenant reads impossible rather than merely forbidden:
 
@@ -398,7 +409,7 @@ show to the caller. The slug catalogue is closed; adding one is a spec change:
 | 403 | `forbidden`, `not-your-module`, `not-module-leader`, `password-change-required`, `mfa-setup-required` | any / lecturer submit / gates |
 | 404 | `not-found`, `module-not-found`, `student-not-found`, `lecturer-not-found`, `account-not-found`, `window-not-found`, `publication-not-found`, `announcement-not-found`, `grade-not-found`, `not-enrolled` | as named |
 | 405 | `method-not-allowed` | framework |
-| 409 | `already-enrolled`, `module-full`, `module-inactive`, `enrolment-window-closed` (`semester`, `opensAt`, `closesAt` extensions; both instants null when no window exists), `withdrawal-deadline-passed` (`withdrawalDeadlineAt`), `results-exist`, `student-left`, `module-locked`, `module-not-submitted`, `already-submitted`, `nothing-to-submit`, `stale-mark` (`studentNumbers[]`), `nothing-to-publish`, `publication-live`, `publication-scheduled`, `username-taken`, `principal-has-account`, `module-code-taken`, `student-number-taken`, `staff-number-taken`, `window-exists`, `demo-account`, `mfa-already-enabled` | as named |
+| 409 | `already-enrolled`, `module-full`, `module-inactive`, `enrolment-window-closed` (`semester`, `opensAt`, `closesAt` extensions; both instants null when no window exists), `withdrawal-deadline-passed` (`withdrawalDeadlineAt`), `results-exist`, `student-left`, `module-locked`, `module-not-submitted`, `already-submitted`, `nothing-to-submit`, `stale-mark` (`studentNumbers[]`), `nothing-to-publish`, `publication-live`, `publication-scheduled`, `username-taken`, `principal-has-account`, `principal-left`, `module-code-taken`, `student-number-taken`, `staff-number-taken`, `window-exists`, `demo-account`, `mfa-already-enabled` | as named |
 | 413 | `payload-too-large` | Kestrel body limit |
 | 415 | `unsupported-media-type` | framework |
 | 422 | `credit-limit-exceeded` (`currentCredits`, `moduleCredits`, `limit`, `semester`), `marks-incomplete` (`missing[]`), `not-enrolled-students` (`studentNumbers[]`), `capacity-below-enrolled` (`enrolledCount`), `semester-change-with-enrolments` (`enrolledCount`), `publish-too-far-ahead`, `invalid-lecturer-assignment`, `window-dates-invalid`, `self-lockout`, `role-principal-mismatch` | as named |
@@ -406,8 +417,9 @@ show to the caller. The slug catalogue is closed; adding one is a spec change:
 | 500 | `internal-error` | unhandled |
 | 503 | `server-busy`, `timeout` | shedding, pool, request timeout |
 
-`ProblemTypes` (S2) declares exactly these 62 slugs as constants; `ProblemTypesTests` asserts the set equals this table
-and `05-frontend.md` section 6.4 maps every one of them.
+`ProblemTypes` (S2) declares exactly these 63 slugs as constants; `ProblemTypesTests` asserts the set equals this table
+and `05-frontend.md` section 6.4 maps every one of them. `principal-left` (409, account provisioning and enabling for a
+student or lecturer who has left) was added by the S6 review (E5).
 
 ## 7. Shared shapes
 
@@ -474,12 +486,17 @@ Paged<T> { items: T[]; page: number; pageSize: number; total: number }
 the module's semester. `AccountView.state = disabled_at != null ? 'disabled' : lockout_end > now ? 'locked' : 'active'`.
 
 `MarksStatus` is computed for **one academic year** (the settings year on lecturer routes; `academicYear` on admin
-results): `total` counts active enrolments of that year on the module; `entered` counts those with a grade row (any
-outcome); `missing = total - entered`; `status` from the grades joined to those enrolments: `published` if any is
-Published with `published_at <= now`, else `scheduled` if any is Published with `published_at > now`, else `submitted`
-if any is Submitted, else `draft` if any grade exists or `total > 0`, else `noStudents`. Grades of withdrawn
-enrolments are ignored everywhere in this computation. A module is **publishable** iff `status = 'submitted' AND
-missing = 0`.
+results): `total` counts active enrolments of that year on the module; `status` from the grades joined to those
+enrolments: `published` if any is Published with `published_at <= now`, else `scheduled` if any is Published with
+`published_at > now`, else `submitted` if any is Submitted, else `draft` if any grade exists or `total > 0`, else
+`noStudents`; `entered` counts the active enrolments whose grade belongs to the module's stage: while `status =
+'draft'` any grade row (any outcome), and once the module has left draft only a Submitted or Published grade;
+`missing = total - entered`. A Draft on an active enrolment of a module that has left draft (a student withdrawn before
+the submit and enrolled again, which section 8.3's `module-locked` rule now prevents, or data from before it) is
+therefore `missing` (review S6 E1). Grades of withdrawn enrolments are ignored everywhere in this computation. A module
+is **publishable** iff `status = 'submitted' AND missing = 0`, that is, iff every active enrolment's grade is Submitted:
+a publish moves exactly the Submitted grades, so it can never report a module published while leaving an active
+student's mark behind.
 
 `MyEnrolment.canWithdraw = status = 'active' AND academicYear = current year AND now < withdrawal_deadline_at AND no
 grade for (student, module) with status IN ('Submitted', 'Published')`; `withdrawBlockedReason` names the first failing
@@ -523,9 +540,23 @@ Every endpoint in this table, the `/api/{**rest}` 404 fallback, `MapFallbackToFi
 | `GET /api/me/results` | | `{ semesters: [{ academicYear: string; semester; state: 'published' \| 'scheduled' \| 'pending'; publishAt: string \| null; results: GradeResult[] }], weightedAverage: number \| null, classification: string \| null }`, newest year first, autumn before spring | 200 |
 | `GET /api/me/timetable` | | `TimetableEntry[]` for active enrolments of the current academic year on modules of `academic_settings.current_semester` | 200 |
 | `GET /api/me/enrolments` | | `MyEnrolment[]`, every academic year, current year first then `enrolledAt` desc (the catalogue labels earlier years "Completed") | 200 |
-| `POST /api/me/enrolments` (`enrol`) | `{ moduleCode: /^\s*[A-Za-z]{2}[0-9]{4}\s*$/ }` (trimmed and upper-cased) | `{ moduleCode, enrolledAt, placesRemaining }` (no `Location` header: there is no single-enrolment GET) | 201; 404 `module-not-found`; 409 `already-enrolled`, `module-full`, `module-inactive`, `enrolment-window-closed`, `results-exist`, `student-left`; 422 `credit-limit-exceeded` |
+| `POST /api/me/enrolments` (`enrol`) | `{ moduleCode: /^\s*[A-Za-z]{2}[0-9]{4}\s*$/ }` (trimmed and upper-cased) | `{ moduleCode, enrolledAt, placesRemaining }` (no `Location` header: there is no single-enrolment GET) | 201; 404 `module-not-found`; 409 `already-enrolled`, `module-full`, `module-inactive`, `enrolment-window-closed`, `results-exist`, `student-left`, `module-locked` (the module's marks for this year have left draft, below); 422 `credit-limit-exceeded` |
 | `DELETE /api/me/enrolments/{code}` (`enrol`) | | | 204; 404 `not-enrolled`; 409 `withdrawal-deadline-passed`, `results-exist` |
 | `GET /api/me/export.json` (`write`) | | `StudentExport` = `{ student, enrolments, grades: GradeResult[], weightedAverage, classification, exportedAt }`: `student` and `enrolments` as in `AdminStudentView`; `grades` the visible grades only (no drafts, and no `status`, `version` or `visibleToStudent`: they describe states the student never sees, T6); `Content-Disposition: attachment; filename="rushday-{studentNumber}.json"`; audit `student.exported_self` | 200 |
+
+**Joining a module whose marks have left draft** (review S6 E1). Once a module's `MarksStatus` for the current year is
+`submitted`, `scheduled` or `published` (an active enrolment of the year holds a Submitted or Published grade), nobody
+joins it: a new enrolment or a reactivation, the student's own or an administrator's override (section 8.5), answers
+409 `module-locked` (detail "Marks for this module have already been submitted this year, so nobody can join it until
+the academic office returns them to draft."). The newcomer's mark could otherwise never be reached: lecturers are
+locked out of a submitted module, a correction needs a submitted grade, a publish moves only Submitted grades and a
+live module cannot be returned to draft. The registry returns the module to draft first (a scheduled one included;
+only a live one needs its publication unpublished), enrols the student, and the lecturers enter the mark and resubmit;
+a student who was withdrawn with a draft finds that draft again. The check runs in the enrolment transaction under the
+module's marks lock taken **shared** (`ModuleMarksLock.AcquireSharedAsync`, `04-performance-and-ops.md` section 2.1
+step 5b), so a submit, return to draft or publish of the module either committed before it or waits for the enrolment;
+enrolments do not wait for one another. It is not a rush rejection reason (no `rushday.enrolments.rejected` tag). A
+withdrawal is unaffected.
 
 ```ts
 DashboardResponse {
@@ -572,7 +603,7 @@ uses the same predicate.
 | `POST /api/lecturer/modules/{code}/announcements` | `{ title (1..120); body (1..4000); pinned?: boolean; publishedAt?: string; expiresAt?: string }` | `AnnouncementView` | 201; 403 |
 | `PUT /api/lecturer/modules/{code}/announcements/{id}` | same body | `AnnouncementView` | 200; 403; 404 `announcement-not-found` |
 | `DELETE /api/lecturer/modules/{code}/announcements/{id}` | | | 204; 403; 404 `announcement-not-found` |
-| Should: `GET /api/lecturer/modules/{code}/roster.csv` | | `text/csv` attachment `roster-{code}.csv` | 200 |
+| Should: `GET /api/lecturer/modules/{code}/roster.csv` (`write`) | | `text/csv` attachment `roster-{code}.csv` (at most 10,000 rows); a bulk read of personal data, so it writes `roster.exported { moduleCode, academicYear, rowCount }` (subject the module, the lecturer as actor), committed before the file is sent (review S6 E15) | 200; 403 |
 
 The `q` predicate (roster, and reused by admin students and accounts): `student_number ILIKE @q || '%' OR full_name
 ILIKE '%' || @q || '%'` with `%` and `_` escaped, so a surname finds "Aisha Khan".
@@ -648,41 +679,60 @@ Each mutation invalidates `windows:all` and audits `window.created|updated|delet
 | `DELETE /api/admin/results/publications/{id}` | | `{ academicYear; semester; grades: number }` | 200; 404; 409 `publication-live` |
 | `POST /api/admin/results/publications/{id}/unpublish` | `{ reason (10..400) }` | `{ academicYear; semester; grades: number }` | 200; 404; 409 `publication-scheduled` (use DELETE) |
 | `POST /api/admin/results/modules/{code}/return-to-draft` | `{ reason (10..400); academicYear? }` | `{ code; status: 'draft'; fromScheduledPublication: boolean }` | 200; 404 `module-not-found`; 409 `module-not-submitted` (status draft or noStudents), `module-locked` (published and live) |
-| `POST /api/admin/results/modules/{code}/marks/{studentNumber}/correct` | `{ outcome?: 'mark' \| 'absent' \| 'deferred' (default `mark`); mark: number \| null (0..100 integer when `outcome = mark`, else null); reason (10..400) }` | `{ studentNumber; before: { mark; outcome }; after: { mark; outcome }; version; correctedAt }` | 200; 404 `module-not-found`, `grade-not-found`; 409 `module-not-submitted` (the grade is still Draft: lecturers own it) |
+| `POST /api/admin/results/modules/{code}/marks/{studentNumber}/correct` | `{ outcome?: 'mark' \| 'absent' \| 'deferred' (default `mark`); mark: number \| null (0..100 integer when `outcome = mark`, else null); reason (10..400) }` | `{ studentNumber; before: { mark; outcome }; after: { mark; outcome }; version; correctedAt }` | 200; 400 `validation` (`errors.mark`) when the mark and the outcome are the ones already recorded; 404 `module-not-found`, `grade-not-found`; 409 `module-not-submitted` (the grade is still Draft: lecturers own it) |
 
 `publish` rules (`ResultsPublicationService.PublishAsync`, one transaction): `publishAt` earlier than now is
 replaced by now (the SPA's picker never offers a past instant); compute `MarksStatus` for every module of the (year,
-semester); `@publishable` = the ids of publishable modules (`status = 'submitted' AND missing = 0`, section 7); none →
-409 `nothing-to-publish`; insert `results_publications`; `UPDATE grades g SET status = 'Published', published_at =
+semester); the candidates are the publishable modules (`status = 'submitted' AND missing = 0`, section 7); none → 409
+`nothing-to-publish`; take the candidates' marks locks exclusively in module-id order (`ModuleMarksLock.AcquireManyAsync`)
+and compute their `MarksStatus` again, so an enrolment, a return to draft or a save that ran meanwhile has either
+committed (and is seen) or waits for the publish (review S6 E1, E9); `@publishable` = the candidates still publishable;
+none → 409 `nothing-to-publish`; insert `results_publications`; `UPDATE grades g SET status = 'Published', published_at =
 @publishAt, publication_id = @id, updated_at = now(), version = g.version + 1 FROM enrolments e WHERE e.student_id =
 g.student_id AND e.module_id = g.module_id AND e.academic_year = @academicYear AND e.status = 'Active' AND g.module_id
 = ANY(@publishable) AND g.status = 'Submitted'`; `excluded` lists the modules of the (year, semester) that are `draft`
-(`reason: 'notSubmitted'`) or `submitted` with `missing > 0` (`reason: 'marksMissing'`, typically a student
-override-enrolled after submission; the fix is return-to-draft); `noStudents`, `scheduled` and `published` modules are
-not listed. When `announce`, insert a pinned university announcement titled `{Semester} {academicYear} results are
-available` (for example `Autumn 2026/27 results are available`), body `Sign in to see your marks.` followed by a blank
-line and `Branding:ResultsFootnote`, with `published_at = publishAt` and no formatted date in the text (D26), and audit
-`announcement.created`; audit `results.published` with counts; metric `rushday.results.published`; invalidate
-`publications:brief` (and `announcements:university` when announcing). Partially entered marks are never published
-and there is no flag to include drafts. Calling publish again for the same (year, semester) publishes newly
-publishable modules under a new publication row.
+(`reason: 'notSubmitted'`) or `submitted` with `missing > 0` (`reason: 'marksMissing'`: an active enrolment without a
+Submitted grade, which the `module-locked` rule of section 8.3 keeps from arising through the API; the fix is
+return-to-draft); `noStudents`, `scheduled` and `published` modules are not listed. When `announce`, insert a pinned
+university announcement titled `{Semester} {academicYear} results are available` (for example `Autumn 2026/27 results
+are available`), body `Sign in to see your marks.` followed by a blank line and `Branding:ResultsFootnote`, with
+`published_at = publishAt` and no formatted date in the text (D26), store its id in `results_publications.announcement_id`
+and audit `announcement.created`; audit `results.published` with counts; metric `rushday.results.published`; invalidate
+`publications:brief` (and `announcements:university` when announcing) after the commit. Partially entered marks are
+never published and there is no flag to include drafts. Calling publish again for the same (year, semester) publishes
+newly publishable modules under a new publication row.
 
-Reschedule (`PUT publications/{id}`) updates the row and `UPDATE grades SET published_at = @new WHERE publication_id =
-@id`, only while `publish_at > now`; audit `results.rescheduled`. Cancel (`DELETE`) is allowed only while scheduled:
-`UPDATE grades SET status = 'Submitted', published_at = NULL, publication_id = NULL, updated_at = now(), version =
-version + 1 WHERE publication_id = @id`, delete the row, audit `results.cancelled { academicYear, semester, grades }`. Unpublish is
-allowed only while live: the same grade update, delete the row, audit `results.unpublished { academicYear, semester,
-grades, reason }`; students stop seeing those marks immediately. Return-to-draft: allowed when the module's grades of
-that year are Submitted, or Published under a publication with `publish_at > now` (then it also decrements that
-publication's `grade_count`/`module_count`, sets `fromScheduledPublication = true`); sets them to Draft with
-`submitted_at = NULL`, `published_at = NULL`, `publication_id = NULL`, `version + 1`; audit `module.returned_to_draft { reason,
-gradeCount, academicYear, fromScheduledPublication }`. When any grade of the module is Published with `published_at <=
-now` the answer is 409 `module-locked` (unpublish the semester or correct single marks instead). Correct: the grade
-of (`studentNumber`, `code`) must exist (else 404 `grade-not-found`) and be Submitted or Published (else 409
-`module-not-submitted`); sets `mark` and `outcome`, `version + 1`, `updated_at`, `corrected_at = now`,
-`entered_by_user_id = caller`; keeps `status`, `published_at` and `publication_id`, so a published correction is
-visible to the student immediately with its "Amended" label; audit `grade.corrected { moduleCode, studentNumber,
-before, after, reason }`. Every one of these invalidates `publications:brief`.
+**The announcement follows its publication** (review S6 E2): a publish's "results are available" announcement must
+never appear before the results or outlive them, so every change to the publication carries it along in the same
+transaction, audited: a reschedule moves its `published_at` to the new instant (`announcement.updated`); a cancel, an
+unpublish and a return to draft that empties the publication soft-delete it (`announcement.deleted`). An administrator
+may still edit or delete it on the announcements page like any other; a deleted one is left alone.
+
+Reschedule (`PUT publications/{id}`) locks the row, updates it and `UPDATE grades SET published_at = @new WHERE
+publication_id = @id`, and moves the announcement, only while `publish_at > now`; audit `results.rescheduled`. Cancel
+(`DELETE`) is allowed only while scheduled: `UPDATE grades SET status = 'Submitted', published_at = NULL,
+publication_id = NULL, updated_at = now(), version = version + 1 WHERE publication_id = @id`, delete the announcement and
+the row, audit `results.cancelled { academicYear, semester, grades }`. Unpublish is allowed only while live: the same
+grade update, delete the announcement and the row, audit `results.unpublished { academicYear, semester, grades, reason
+}`; students stop seeing those marks, and the announcement, immediately. Return-to-draft: allowed when the module's
+grades of that year are Submitted, or Published under a publication with `publish_at > now` (then it also decrements
+that publication's `grade_count`/`module_count`, sets `fromScheduledPublication = true`); sets them to Draft with
+`submitted_at = NULL`, `published_at = NULL`, `publication_id = NULL`, `version + 1`; audit `module.returned_to_draft {
+reason, gradeCount, academicYear, fromScheduledPublication }`. A scheduled publication left with no grade by it is
+deleted in the same transaction with its announcement and audited `results.cancelled { academicYear, semester, grades:
+0, returnedToDraft: code }` (review S6 E3), so no empty publication drives the countdown or later becomes the latest
+live one. It takes the module's marks lock, then the rows of the publications its grades belong to (`ORDER BY id FOR
+UPDATE`), then the grade rows: the order a reschedule, cancel or unpublish takes them in (publication, then grades), so
+it waits behind one instead of deadlocking with it (review S6 E9, `ResultsGovernanceTests`). When any grade of the
+module is Published with `published_at <= now` the answer is 409 `module-locked` (unpublish the semester or correct
+single marks instead). Correct: the grade of (`studentNumber`, `code`) must exist (else 404 `grade-not-found`) and be
+Submitted or Published (else 409 `module-not-submitted`), and the request must change the mark or the outcome (else 400
+`validation` with `errors.mark`, and nothing is written: a student never sees "Amended" on a mark nobody amended, review
+S6 E12); sets `mark` and `outcome`, `version + 1`, `updated_at`, `corrected_at = now`, `entered_by_user_id = caller`;
+keeps `status`, `published_at` and `publication_id`, so a published correction is visible to the student immediately
+with its "Amended" label; audit `grade.corrected { moduleCode, studentNumber, before, after, reason }`. Every one of
+these invalidates `publications:brief` after its commit, and a reschedule, cancel, unpublish or return to draft also
+`announcements:university`.
 
 **Students**
 
@@ -691,14 +741,14 @@ before, after, reason }`. Every one of these invalidates `publications:brief`.
 | `GET /api/admin/students` | `q?` (≤100; the section 8.4 predicate), `accountState?` (`none`\|`active`\|`locked`\|`disabled`), `page`, `pageSize` | `Paged<{ studentNumber; fullName; programme; yearOfStudy; email; leftAt: string \| null; accountState: 'none' \| 'active' \| 'locked' \| 'disabled' }>` ordered by student number | 200 |
 | `POST /api/admin/students` | `{ studentNumber: /^S[0-9]{6}$/; fullName (1..200); programme (1..200); yearOfStudy (1..6); email? }` | the row | 201; 409 `student-number-taken`; audit `student.created` |
 | `GET /api/admin/students/{studentNumber}` | | `AdminStudentView` (below); **audited** `student.viewed { studentNumber }` (subject Student) | 200; 404 `student-not-found` |
-| `PUT /api/admin/students/{studentNumber}` | `{ fullName; programme; yearOfStudy; email }` | the row | 200; 404; audit `student.updated { before, after }`; updates the linked user's `display_name` in the same transaction |
-| `POST /api/admin/students/{studentNumber}/leave` | `{ reason (10..400) }` | `{ studentNumber; leftAt; withdrawn: number }` | 200; 404; 409 `student-left` (already left); sets `left_at`, admin-withdraws every active enrolment of the current year (`enrolment.admin_withdrawn` per row, `{ reason, override: true, left: true }`), disables the linked account (`account.disabled`), audit `student.left { reason }` |
+| `PUT /api/admin/students/{studentNumber}` | `{ fullName; programme; yearOfStudy; email }` | the row | 200; 404; 409 `demo-account` (a demo actor, while the linked account is a real one: the edit would rename a real login, review S6 E6); audit `student.updated { before, after }`; updates the linked user's `display_name` in the same transaction (a demo account's too: a display name is not a credential and cannot lock a visitor out, so it follows its record like any other) |
+| `POST /api/admin/students/{studentNumber}/leave` | `{ reason (10..400) }` | `{ studentNumber; leftAt; withdrawn: number }` | 200; 404; 409 `student-left` (already left), `demo-account` (the linked account is a demo account, or a real one and the actor is a demo actor); sets `left_at`, admin-withdraws the active enrolments of the current year that hold **no Submitted or Published grade** (review S6 E8: a mark already with the exam board stays visible to the student, in the export and to the registry, and a submitted one is published with the rest), through one `EnrolmentService.WithdrawManyAsync` call (`enrolment.admin_withdrawn` per row, `{ reason, override: true, left: true }`), disables the linked account (`account.disabled`), audit `student.left { reason }`; `withdrawn` counts the rows withdrawn |
 | `GET /api/admin/students/{studentNumber}/export.json` (`write`) | | `StudentExport` (section 8.3) | 200; 404; audit `student.exported { studentNumber }` |
-| `POST /api/admin/students/{studentNumber}/enrolments` | `{ moduleCode; reason (10..400); forceCapacity?: boolean }` | `{ moduleCode; enrolledAt; placesRemaining; capacityRaised: boolean }` | 201; 404 `student-not-found`, `module-not-found`; 409 `already-enrolled`, `results-exist`, `student-left`, `module-inactive`, `module-full` (without `forceCapacity`) |
+| `POST /api/admin/students/{studentNumber}/enrolments` | `{ moduleCode; reason (10..400); forceCapacity?: boolean }` | `{ moduleCode; enrolledAt; placesRemaining; capacityRaised: boolean }` | 201; 404 `student-not-found`, `module-not-found`; 409 `already-enrolled`, `results-exist`, `student-left`, `module-inactive`, `module-full` (without `forceCapacity`), `module-locked` (the module's marks for this year have left draft, section 8.3; return it to draft first) |
 | `POST /api/admin/students/{studentNumber}/enrolments/{code}/withdraw` | `{ reason (10..400) }` | | 204; 404 `not-enrolled` |
 
 Override rules: windows and the credit limit are ignored (`EnrolmentRules.Evaluate(..., windowOpen: true,
-ignoreCreditLimit: true)`); `results-exist` and `student-left` still apply. Capacity applies unless `forceCapacity`,
+ignoreCreditLimit: true)`); `results-exist`, `student-left` and `module-locked` (section 8.3) still apply. Capacity applies unless `forceCapacity`,
 which **raises capacity only when the module is full**: step 8 of `04-performance-and-ops.md` section 2.1 runs
 `WITH before AS (SELECT capacity AS c FROM modules WHERE id = @module FOR UPDATE) UPDATE modules m SET enrolled_count =
 m.enrolled_count + 1, capacity = CASE WHEN m.enrolled_count >= m.capacity THEN m.enrolled_count + 1 ELSE m.capacity END,
@@ -726,15 +776,15 @@ AdminStudentView {
 |---|---|---|---|
 | `GET /api/admin/modules` | `includeInactive?=false` | `[ModuleSummary & { description: string \| null; marks: MarksStatus }]` | 200 |
 | `POST /api/admin/modules` | `{ code: /^[A-Z]{2}[0-9]{4}$/; title (1..200); description? (≤2000); credits (5..60); capacity (0..10000); semester }` | `ModuleDetail` | 201; 409 `module-code-taken` |
-| `PUT /api/admin/modules/{code}` | `{ title; description; credits; capacity; semester; isActive }` | `ModuleDetail` | 200; 404; 422 `capacity-below-enrolled` **only when the request lowers `capacity` below `enrolled_count`**; an unchanged capacity is always accepted even while `enrolled_count > capacity`; 422 `semester-change-with-enrolments` (`enrolledCount`) when `semester` differs and `enrolled_count > 0` (it would silently move students' credits and timetables) |
+| `PUT /api/admin/modules/{code}` | `{ title; description; credits; capacity; semester; isActive }` | `ModuleDetail` | 200; 404; 422 `capacity-below-enrolled` **only when the request lowers `capacity` below `enrolled_count`**; an unchanged capacity is always accepted even while `enrolled_count > capacity`; 422 `semester-change-with-enrolments` (`enrolledCount` = the module's enrolments of **every** year, active or withdrawn) when `semester` differs and the module has any enrolment or any grade in any year: results are grouped by (enrolment year, module semester), so a change would move students' credits and timetables and earlier years' published marks into another semester (review S6 E7); the module row is locked `FOR UPDATE`, which also holds off a new enrolment's foreign-key check until the decision commits. A module that has never been used may move; a running course moves by creating a new module |
 | `GET /api/admin/modules/{code}/roster` | `q?` (≤100), `page=1`, `pageSize=50` (≤200), `academicYear?` (defaults to settings) | the lecturer roster shape of section 8.4, for any module (no `module_lecturers` join) | 200; 404 `module-not-found` |
 | `GET /api/admin/modules/{code}/marks` | `q?` (≤100), `page=1`, `pageSize=100` (≤500), `academicYear?` | `MarksSheet` with `myRole: null`, read-only (there is no admin `PUT` of marks; single marks are corrected through the results route) | 200; 404 `module-not-found` |
-| `POST /api/admin/modules/{code}/trim-to-capacity` | `{ reason (10..400) }` | `{ code; capacity; before: number; after: number; withdrawn: string[] }` | 200; 404; withdraws active enrolments latest `enrolled_at` first until `enrolled_count = capacity`, one `enrolment.admin_withdrawn { reason, override: true, trim: true }` per row, audit `module.trimmed { reason, withdrawn }` |
-| `PUT /api/admin/modules/{code}/lecturers` | `{ assignments: [{ staffNumber; role: 'leader' \| 'teacher' }] }` (exactly one leader, no duplicates, no lecturer with `left_at`) | `ModuleDetail` | 200; 404 `module-not-found`, `lecturer-not-found`; 422 `invalid-lecturer-assignment` |
+| `POST /api/admin/modules/{code}/trim-to-capacity` | `{ reason (10..400) }` | `{ code; capacity; before: number; after: number; withdrawn: string[] }` (`before`/`after`: the stored `enrolled_count` when the trim started and when it ended) | 200; 404; locks every student holding one of the year's places (id order, the enrolment lock order), counts the **real** active enrolments of the current year (never the stored counter: a drifted counter must not withdraw anyone from a module that is not over capacity, review S6 E4), withdraws the latest `enrolled_at` beyond capacity through one `EnrolmentService.WithdrawManyAsync` call (joint item J1; one `enrolment.admin_withdrawn { reason, override: true, trim: true }` per row), then sets `enrolled_count` to the real count under the module row lock (which repairs drift); audit `module.trimmed { reason, withdrawn, enrolledCount: { before, after } }` |
+| `PUT /api/admin/modules/{code}/lecturers` | `{ assignments: [{ staffNumber; role: 'leader' \| 'teacher' }] }` (exactly one leader, no duplicates, no lecturer with `left_at`) | `ModuleDetail` | 200; 404 `module-not-found`, `lecturer-not-found`; 422 `invalid-lecturer-assignment`; the module row is locked (`FOR NO KEY UPDATE`) before the current assignments are read, so two concurrent assignments of one module run one after the other, and the unique index `ix_module_lecturers_module_id_leader` makes a second leader impossible at the database (review S6 E10); demotions and removals are saved before the new leader |
 | `GET /api/admin/lecturers` | `q?` (≤100; staff number prefix or name fragment) | `[{ staffNumber; fullName; title; department; email; leftAt: string \| null; hasAccount: boolean; moduleCodes: string[] }]` | 200 |
 | `POST /api/admin/lecturers` | `{ staffNumber: /^L[0-9]{5}$/; fullName; title (Dr\|Prof\|Mr\|Ms\|Mx); department (1..8); email? }` | the row | 201; 409 `staff-number-taken`; audit `lecturer.created` |
-| `PUT /api/admin/lecturers/{staffNumber}` | `{ fullName; title; department; email }` | the row | 200; 404 `lecturer-not-found`; audit `lecturer.updated { before, after }`; updates the linked user's `display_name` |
-| `POST /api/admin/lecturers/{staffNumber}/leave` | `{ reason (10..400) }` | the row | 200; 404; sets `left_at`, disables the linked account (`account.disabled`), audit `lecturer.left { reason }`; assignments stay and carry `left: true`; idempotent (a lecturer who already left is returned unchanged, no audit row) |
+| `PUT /api/admin/lecturers/{staffNumber}` | `{ fullName; title; department; email }` | the row | 200; 404 `lecturer-not-found`; 409 `demo-account` (a demo actor, while the linked account is a real one, as for students); audit `lecturer.updated { before, after }`; updates the linked user's `display_name` |
+| `POST /api/admin/lecturers/{staffNumber}/leave` | `{ reason (10..400) }` | the row | 200; 404; 409 `demo-account` (as for students); sets `left_at`, disables the linked account (`account.disabled`), audit `lecturer.left { reason }`; assignments stay and carry `left: true` but no authority (section 4: the lecturer teaches nothing), and `lecturer-modules:{lecturerId}` is invalidated after the commit; idempotent (a lecturer who already left is returned unchanged, no audit row) |
 
 Module mutations invalidate `catalogue:all` and audit `module.created|updated|lecturers_set|trimmed`; changing
 `credits` on a module with active enrolments is allowed and audited (the UI warns). Lecturer assignment invalidates
@@ -745,11 +795,11 @@ Module mutations invalidate `catalogue:all` and audit `module.created|updated|le
 | Method and route | Request | Response | Codes |
 |---|---|---|---|
 | `GET /api/admin/accounts` | `q?` (≤100; username prefix or display name fragment), `role?`, `state?` (`active`\|`locked`\|`disabled`), `page`, `pageSize` | `Paged<AccountView>` | 200 |
-| `POST /api/admin/accounts` | `{ username (1..64, allowed chars); displayName (1..200); role; studentNumber?; staffNumber?; email?; temporaryPassword? (policy) }` | `{ account: AccountView; temporaryPassword: string }` (generated 16-character password when omitted, alphabet in `01` section 8; shown once) | 201; 404 `student-not-found`, `lecturer-not-found`; 409 `username-taken`, `principal-has-account`; 422 `role-principal-mismatch` |
+| `POST /api/admin/accounts` | `{ username (1..64, allowed chars); displayName (1..200); role; studentNumber?; staffNumber?; email?; temporaryPassword? (policy) }` | `{ account: AccountView; temporaryPassword: string }` (generated 16-character password when omitted, alphabet in `01` section 8; shown once) | 201; 404 `student-not-found`, `lecturer-not-found`; 409 `username-taken`, `principal-has-account`, `principal-left` (the student or lecturer has left: a login would give a former lecturer their modules back, review S6 E5); 422 `role-principal-mismatch` |
 | `POST /api/admin/accounts/{id}/lock` | | `AccountView` (`lockoutEnd = 9999-12-31T00:00:00Z`) | 200; 404 `account-not-found`; 409 `demo-account`; 422 `self-lockout` |
 | `POST /api/admin/accounts/{id}/unlock` | | `AccountView` | 200; 404; 409 `demo-account` |
 | `POST /api/admin/accounts/{id}/disable` | | `AccountView` | 200; 404; 409 `demo-account`; 422 `self-lockout` |
-| `POST /api/admin/accounts/{id}/enable` | | `AccountView` | 200; 404; 409 `demo-account` |
+| `POST /api/admin/accounts/{id}/enable` | | `AccountView` | 200; 404; 409 `demo-account`, `principal-left` (the account's student or lecturer has left; the leave disabled it and it stays disabled) |
 | `POST /api/admin/accounts/{id}/reset-password` | `{ temporaryPassword? }` | `{ temporaryPassword }` | 200; 404; 409 `demo-account`; `self-lockout` is not raised (admins may reset their own: the response is followed by the caller's session ending at the next request because the stamp rotated; the SPA shows the temporary password, then redirects to `/login`) |
 | `POST /api/admin/accounts/{id}/reset-mfa` | | `AccountView` (`mfaEnabled = false`) | 200; 404; 409 `demo-account`; `SetTwoFactorEnabledAsync(false)`, `ResetAuthenticatorKeyAsync`, rotate the stamp; audit `account.mfa_reset { username }` |
 
@@ -761,7 +811,10 @@ actor** (a session with the `demo` claim, whose password is on the login page; `
 mutate a non-demo account either (409 `demo-account`), so the public demo administrator can never lock, disable, reset
 or re-enable a real account; and every account a demo actor provisions is created with `is_demo = true` (and without
 `must_change_password`, since a demo account cannot change its password), so it is read-only, never locked out, and
-disabled with the rest of the demo when demo mode is switched off (`DemoActorTests`).
+disabled with the rest of the demo when demo mode is switched off (`DemoActorTests`). The same rule reaches the record
+routes that change a login: a demo actor's student or lecturer edit (which renames the linked login) or leave (which
+disables it) is 409 `demo-account` when the linked account is a real one (review S6 E6). No account is provisioned or
+re-enabled for a student or lecturer who has left (409 `principal-left`, review S6 E5).
 
 **Announcements (university scope)**
 
@@ -773,7 +826,12 @@ disabled with the rest of the demo when demo mode is switched off (`DemoActorTes
 | `DELETE /api/admin/announcements/{id}` | | | 204; 404 |
 
 Admins may edit or delete announcements of any scope through these routes. Mutations invalidate
-`announcements:university` and audit `announcement.created|updated|deleted`.
+`announcements:university` and audit `announcement.created|updated|deleted`. `AnnouncementService`'s write methods take
+an explicit `AnnouncementWriteScope` (joint item J3): `Administrator` for these routes and the results publication (a
+new announcement is university-wide; an edit or a delete reaches any scope) or `Module(moduleId)` for the lecturer
+routes, which obtain it only from the module resolved through `module_lecturers` (section 8.4); there is no null that
+could mean "any scope". A results publication's announcement moves and goes with the publication (the results rules
+above).
 
 **Audit and ops**
 

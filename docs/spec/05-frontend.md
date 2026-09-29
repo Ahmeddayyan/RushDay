@@ -420,7 +420,11 @@ grid shows saving state and applies the returned rows. Admin mutations invalidat
 `describeProblem(err): { title, message, action?: 'retry' | 'login' | 'wait' }` resolves by slug first, then status, then
 the generic rows. `{support}` is `SupportLink` text from `lib/format.ts` `supportLink(status)`: "contact the academic
 office at {email}" / "contact the academic office ({url})" when `institution.support` is set, else "contact the
-academic office". Every slug of `02-api.md` section 6 has a row (`api/problem.test.ts` iterates the catalogue):
+academic office". Every slug of `02-api.md` section 6 has a row (`api/problem.test.ts` iterates the catalogue; 63 slugs
+since the S6 review added `principal-left`). Two server rules from the same review that the SPA reflects: `Pagination`
+never offers a page past `page x pageSize = 10,000` (the API answers 400 `validation` with `errors.page` beyond it; the
+audit log's filters and CSV export reach older rows), and a correction dialog maps the 400 `validation` a no-change
+correction answers (`errors.mark`) onto its mark field:
 
 | Slug | Status | Copy |
 |---|---|---|
@@ -446,7 +450,7 @@ academic office". Every slug of `02-api.md` section 6 has a row (`api/problem.te
 | `withdrawal-deadline-passed` | 409 | "The withdrawal deadline for {code} was {withdrawalDeadlineAt}. To withdraw now, {support}." |
 | `results-exist` | 409 | "{code} already has a submitted or published mark, so it can't be changed here. {support, capitalised}." |
 | `student-left` | 409 | "This student has left, so they can't be enrolled." (own session: "Your record is marked as left. {support}.") |
-| `module-locked` | 409 | lecturer: "Marks for this module are submitted and can't be changed. Ask the academic office to return it to draft."; admin: "Students can already see these marks. Unpublish the semester or correct single marks." |
+| `module-locked` | 409 | lecturer: "Marks for this module are submitted and can't be changed. Ask the academic office to return it to draft."; admin: "Students can already see these marks. Unpublish the semester or correct single marks."; on an enrolment (S6 review E1; `POST /api/me/enrolments` and the admin override): student "Marks for {code} have already been submitted this year, so you can't join it now. {support, capitalised}."; admin "Marks for {code} are already submitted this year. Return the module to draft before enrolling anyone." |
 | `module-not-submitted` | 409 | "This module is still in draft; there's nothing to return or correct yet." |
 | `already-submitted` | 409 | "This module has already been submitted." |
 | `nothing-to-submit` | 409 | "No students are enrolled on {code} this year, so there's nothing to submit." |
@@ -456,6 +460,7 @@ academic office". Every slug of `02-api.md` section 6 has a row (`api/problem.te
 | `publication-scheduled` | 409 | "These results are not live yet. Cancel the scheduled publication instead." |
 | `username-taken` | 409 | "That username is already in use." |
 | `principal-has-account` | 409 | "{number} already has an account." |
+| `principal-left` | 409 | "{number} has left, so they can't have an account." (S6 review E5; provisioning and enabling) |
 | `module-code-taken`, `student-number-taken`, `staff-number-taken` | 409 | "{value} already exists." |
 | `window-exists` | 409 | "A window for {academicYear} {semester} already exists. Edit it instead." |
 | `demo-account` | 409 | "Demo accounts are read-only, so the demo stays usable for the next visitor." |
@@ -464,7 +469,7 @@ academic office". Every slug of `02-api.md` section 6 has a row (`api/problem.te
 | `marks-incomplete` | 422 | "{n} students have no mark or outcome yet." (dialog lists `missing`) |
 | `not-enrolled-students` | 422 | "{n} students are no longer enrolled: {list}." |
 | `capacity-below-enrolled` | 422 | "Capacity can't go below the {enrolledCount} students already enrolled." |
-| `semester-change-with-enrolments` | 422 | "The semester can't change while {enrolledCount} students are enrolled." |
+| `semester-change-with-enrolments` | 422 | "The semester can't change once students have enrolled ({enrolledCount} enrolments in all years). Create a new module instead." |
 | `publish-too-far-ahead` | 422 | "Choose a date within the next 90 days." |
 | `invalid-lecturer-assignment` | 422 | "Assign exactly one leader, list each lecturer once, and don't assign lecturers who have left." |
 | `window-dates-invalid` | 422 | "Opens must be before closes, and the withdrawal deadline can't be before closes." |
@@ -935,8 +940,8 @@ Continue?"). Client validation mirrors `window-dates-invalid`.
 
 Year and semester pickers (year defaults to settings). `SubmissionProgressTable`: code, title, leader, enrolled,
 entered/missing, `MarksStatusChip`, and the inline action for each state: draft "Waiting for the lecturer"; submitted
-with `missing = 0` "Ready to publish"; submitted with `missing > 0` "Submitted, {n} marks missing (students added
-after submission): Return to draft"; scheduled "In the publication scheduled for {instant}: Return to draft";
+with `missing = 0` "Ready to publish"; submitted with `missing > 0` "Submitted, {n} marks missing (a student without
+a submitted mark): Return to draft"; scheduled "In the publication scheduled for {instant}: Return to draft";
 published "Live: correct single marks from the Marks tab". Sorted by state then code; toggle "Hide modules without
 students", on by default. Empty: "Nothing submitted for {semester} {year} yet; lecturers submit from their Marks page."
 

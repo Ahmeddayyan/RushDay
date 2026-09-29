@@ -99,7 +99,8 @@ when idle a timer is a lie, a stored instant is deterministic, testable with a f
 - A student may self-enrol on module M iff a window exists for (current year, M.semester) and
   `opens_at <= now < closes_at`. Self-withdrawal is allowed iff `now < withdrawal_deadline_at` and no submitted or
   published mark exists. A module the student already holds a submitted or published mark for cannot be taken
-  again in v1 (409 `results-exist`; retakes are Could).
+  again in v1 (409 `results-exist`; retakes are Could). Nobody joins a module whose marks for the year have already
+  been submitted, scheduled or published (409 `module-locked`, section 4.3), not even by an administrator's override.
 - Outside a window the catalogue still shows every active module with `enrolmentState` = `notYetOpen | open | closed`
   and the instants, so students can plan.
 - Demo data: Autumn 2026/27 window open 2026-09-14 09:00 to 2026-10-02 17:00 UTC (withdrawal deadline 2026-10-30
@@ -156,7 +157,11 @@ Draft ──leader submits module──▶ Submitted ──admin publishes (year
   student who withdrew, or was withdrawn, never sees a mark for the module). This is one query filter
   (`GradeQueries.VisibleToStudents(db, now)`) that every student-facing read goes through. Student response contracts
   carry no field that could hold a draft mark. Only grades of active enrolments are ever submitted or published;
-  withdrawn students' drafts stay Draft. Before `published_at` the student sees "Autumn 2025/26 results publish on
+  withdrawn students' drafts stay Draft. **No active student's mark is ever stranded** (review S6 E1): once a module's
+  marks for the year have left draft nobody can join it (409 `module-locked`) until an administrator returns it to
+  draft, when the returning student's draft is there again for the lecturers; and a module is publishable only when
+  every active enrolment's grade is Submitted (a Draft on an active enrolment counts as missing), so a publish never
+  reports a module published while leaving a student's mark behind. Before `published_at` the student sees "Autumn 2025/26 results publish on
   28 Sep 2026 at 10:00 (Europe/London)", formatted by the browser. A corrected mark is labelled "Amended {date}".
 - The 80,000 seeded grades become `Published` with their existing `published_at` (2026-09-28 09:00 UTC) and a
   seed `results_publications` row for (2025/26, autumn). On the live demo that instant is in the past from release
@@ -171,7 +176,9 @@ Draft ──leader submits module──▶ Submitted ──admin publishes (year
 with line breaks only. `published_at` may be in the future; optional `expires_at`; `pinned` sorts first.
 Students see university announcements plus those of modules they are actively enrolled on this year; lecturers see
 university plus their modules; administrators see all. Publishing results can post a pinned university announcement
-in the same transaction.
+in the same transaction; it follows the publication (a reschedule moves it; a cancel, an unpublish or a return to
+draft that empties the publication deletes it), so "results are available" never appears before the results or
+outlives them.
 
 ### 4.5 Timetable
 
@@ -216,9 +223,9 @@ wrong reason.
 | Must | TOTP second factor, mandatory: an administrator without it can only reach the MFA setup routes. |
 | Must | Enrolment windows: create, edit, delete per (academic year, semester). |
 | Must | Results: submission progress per module for a (year, semester), modules without students hidden by default; publish at an instant (now or future, at most 90 days ahead), optionally posting a pinned announcement; publication history; reschedule or cancel a scheduled publication; unpublish a live publication with a reason; return a module to draft with a reason (draft or scheduled); correct a single mark with a reason (submitted or published). |
-| Must | Students: create, edit (name, programme, year, email), mark as left (withdraws this year's enrolments, disables the account); search by number prefix or name fragment; view a student as the student sees it plus statuses (the view is audited); override-enrol and override-withdraw with a mandatory reason (ignores windows and the credit limit; capacity applies unless `forceCapacity` raises capacity by one **only when the module is full**, audited); personal data export on the student's behalf. |
-| Must | Modules: create and edit title, description, credits, capacity (never lowered below `enrolled_count`; an unchanged capacity is always accepted), semester (not while students are enrolled), active flag; assign lecturers (exactly one leader; a lecturer who has left cannot be assigned); read-only roster and marks sheet for any module; trim an over-capacity module back to capacity with a reason. |
-| Must | Lecturers: create; edit (name, title, department, email); mark as left; list. |
+| Must | Students: create, edit (name, programme, year, email), mark as left (withdraws this year's enrolments that hold no submitted or published mark, disables the account); search by number prefix or name fragment; view a student as the student sees it plus statuses (the view is audited); override-enrol and override-withdraw with a mandatory reason (ignores windows and the credit limit; capacity applies unless `forceCapacity` raises capacity by one **only when the module is full**, audited); personal data export on the student's behalf. |
+| Must | Modules: create and edit title, description, credits, capacity (never lowered below `enrolled_count`; an unchanged capacity is always accepted), semester (only while the module has never had an enrolment or a mark, in any year), active flag; assign lecturers (exactly one leader; a lecturer who has left cannot be assigned); read-only roster and marks sheet for any module; trim an over-capacity module back to capacity with a reason (counted from the real enrolments). |
+| Must | Lecturers: create; edit (name, title, department, email); mark as left (their assignments stay on record without authority, and they get no account again); list. |
 | Must | Accounts: provision a user for an existing student or lecturer or a new administrator with a temporary password shown once; lock, unlock, disable, enable, reset password (all set "must change password"), reset the second factor; demo accounts are read-only. |
 | Must | University-wide announcements. |
 | Must | Audit log filtered by actor, student, module, action, date range; CSV export (itself audited, truncation signalled). |

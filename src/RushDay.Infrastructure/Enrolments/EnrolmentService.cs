@@ -33,6 +33,9 @@ public enum EnrolmentError
     StudentLeft,
     NotEnrolled,
     WithdrawalDeadlinePassed,
+
+    /// <summary>The module's marks for the current year are submitted, scheduled or published (409 <c>module-locked</c>).</summary>
+    ModuleLocked,
 }
 
 /// <summary>
@@ -587,6 +590,16 @@ public sealed class EnrolmentService(
                 return await scope.FailAsync(EnrolmentResult.Fail(Refusal(decision, module, window, credits)), cancellationToken);
             }
 
+            // 5b. Nobody joins a module whose marks for this year have left draft (submitted, scheduled or published;
+            // review S6 E1): the newcomer's mark could never be entered (lecturers are locked out), corrected (there is no
+            // submitted grade) or published. The registry returns the module to draft first. The shared marks lock makes
+            // the check and this enrolment one step against a submit, return to draft or publish of the module.
+            await ModuleMarksLock.AcquireSharedAsync(db, module.Id, cancellationToken);
+            if (await MarksLeftDraftAsync(module.Id, currentYear, cancellationToken))
+            {
+                return await scope.FailAsync(EnrolmentResult.Fail(new EnrolmentFailure(EnrolmentError.ModuleLocked)), cancellationToken);
+            }
+
             // 6. Reactivate the existing row (withdrawn, or active in an earlier year without a result) or insert one;
             // either way it is stamped with the current academic year (D28). A row from an earlier year takes this
             // year's marks from scratch: its Draft grade (the only kind results-exist lets through) is deleted with it.
@@ -868,6 +881,17 @@ public sealed class EnrolmentService(
 
         return details;
     }
+
+    /// <summary>
+    /// Whether any active enrolment of <paramref name="academicYear"/> on the module holds a Submitted or Published grade,
+    /// that is, whether the module's <c>MarksStatus</c> for the year is <c>submitted</c>, <c>scheduled</c> or
+    /// <c>published</c>. A module with no grades (the rush's) answers from the (module_id, status) index at once.
+    /// </summary>
+    private Task<bool> MarksLeftDraftAsync(Guid moduleId, string academicYear, CancellationToken cancellationToken) =>
+        (from g in db.Grades.AsNoTracking()
+         join e in db.Enrolments.AsNoTracking() on new { g.StudentId, g.ModuleId } equals new { e.StudentId, e.ModuleId }
+         where g.ModuleId == moduleId && g.Status != GradeStatus.Draft && e.Status == EnrolmentStatus.Active && e.AcademicYear == academicYear
+         select g.Id).AnyAsync(cancellationToken);
 
     private static bool IsRejectionReason(EnrolmentError error) => error is EnrolmentError.ModuleFull
         or EnrolmentError.AlreadyEnrolled

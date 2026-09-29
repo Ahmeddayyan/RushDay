@@ -25,6 +25,9 @@ public enum PublicationError
     ModuleNotSubmitted,
     ModuleLocked,
     GradeNotFound,
+
+    /// <summary>A correction that would leave the mark and the outcome as they are (400 <c>validation</c>, review S6 E12).</summary>
+    CorrectionUnchanged,
 }
 
 /// <summary><c>excluded[].reason</c> of a publish.</summary>
@@ -76,6 +79,18 @@ public sealed record PublicationResult<T>(T? Value, PublicationError Error)
 /// instant on <c>results_publications</c> and on every grade it holds, and students' reads compare it with the clock.
 /// Only publishable modules (<c>submitted</c> with nothing missing) are ever published, and only the grades of
 /// <b>active</b> enrolments of that year. Every operation is one transaction that writes its audit row with the change.
+/// <para>
+/// A publish with <c>announce</c> links its pinned announcement to the publication (review S6 E2): a reschedule moves
+/// it, a cancel or an unpublish deletes it, and a return to draft that takes the last grade out of a scheduled
+/// publication deletes the publication and its announcement (E3). Callers invalidate <c>publications:brief</c> and
+/// <c>announcements:university</c> after each of these commits.
+/// </para>
+/// <para>
+/// Lock order: a module's marks lock (<see cref="ModuleMarksLock"/>; a publish takes its modules' in id order) →
+/// publication rows (id order) → grade rows. A reschedule, cancel or unpublish takes the publication row and then its
+/// grades; a return to draft takes the publications its grades belong to before the grades (E9), so the two never wait
+/// for each other in a cycle.
+/// </para>
 /// </summary>
 public sealed class ResultsPublicationService(
     RushDayDbContext db,
@@ -121,7 +136,8 @@ public sealed class ResultsPublicationService(
     /// Publishes the (year, semester) at <paramref name="publishAt"/> (an earlier instant means now; more than 90 days
     /// ahead is <c>publish-too-far-ahead</c>). Only publishable modules are included; none is <c>nothing-to-publish</c>.
     /// Calling it again publishes only modules that became publishable since, under a new publication. With
-    /// <paramref name="announce"/> a pinned university announcement goes out at the same instant.
+    /// <paramref name="announce"/> a pinned university announcement goes out at the same instant, linked to the
+    /// publication.
     /// </summary>
     public async Task<PublicationResult<PublishOutcome>> PublishAsync(
         string academicYear,
@@ -150,9 +166,32 @@ public sealed class ResultsPublicationService(
             .OrderBy(m => m.Code)
             .Select(m => new { m.Id, m.Code })
             .ToListAsync(cancellationToken);
-        var statuses = await MarksStatusQuery.ForModulesAsync(db, academicYear, now, [.. modules.Select(m => m.Id)], cancellationToken);
+        var statuses = new Dictionary<Guid, MarksStatusData>(
+            await MarksStatusQuery.ForModulesAsync(db, academicYear, now, [.. modules.Select(m => m.Id)], cancellationToken));
 
-        var publishable = modules.Where(m => MarksStatusQuery.Of(statuses, m.Id).IsPublishable).Select(m => m.Id).ToArray();
+        var candidates = modules.Where(m => MarksStatusQuery.Of(statuses, m.Id).IsPublishable).Select(m => m.Id).ToList();
+        if (candidates.Count == 0)
+        {
+            return PublicationResult<PublishOutcome>.Fail(PublicationError.NothingToPublish);
+        }
+
+        // The candidates' marks locks (id order), then their status again: an enrolment that joined, or a return to
+        // draft that ran, since the first read has either committed (and is seen now) or waits for this publish.
+        await ModuleMarksLock.AcquireManyAsync(db, candidates, cancellationToken);
+        var locked = await MarksStatusQuery.ForModulesAsync(db, academicYear, now, candidates, cancellationToken);
+        foreach (var id in candidates)
+        {
+            if (locked.TryGetValue(id, out var status))
+            {
+                statuses[id] = status;
+            }
+            else
+            {
+                statuses.Remove(id);
+            }
+        }
+
+        var publishable = candidates.Where(id => MarksStatusQuery.Of(statuses, id).IsPublishable).ToArray();
         if (publishable.Length == 0)
         {
             return PublicationResult<PublishOutcome>.Fail(PublicationError.NothingToPublish);
@@ -181,8 +220,7 @@ public sealed class ResultsPublicationService(
         db.ResultsPublications.Add(publication);
         await db.SaveChangesAsync(cancellationToken);
 
-        // One statement; a module returned to draft (or a publish that ran first) meanwhile simply matches no rows,
-        // so the counts come from what was actually published.
+        // One statement; the counts come from what was actually published.
         var published = await RawSql.QueryAsync(
             db,
             PublishGradesSql,
@@ -208,10 +246,10 @@ public sealed class ResultsPublicationService(
         {
             var title = $"{semester} {academicYear} results are available";
             var body = "Sign in to see your marks." + "\n\n" + resultsFootnote;
-            await announcements.CreateAsync(new AnnouncementDraft(title, body, Pinned: true, PublishedAt: instant), moduleId: null, actorUserId, cancellationToken);
+            var announcement = await announcements.CreateAsync(new AnnouncementDraft(title, body, Pinned: true, PublishedAt: instant), AnnouncementWriteScope.Administrator, actorUserId, cancellationToken);
+            publication.AnnouncementId = announcement.Id;
         }
 
-        var publishedIds = published.ToHashSet();
         audit.Record(
             db,
             AuditActions.ResultsPublished,
@@ -231,10 +269,13 @@ public sealed class ResultsPublicationService(
         await transaction.CommitAsync(cancellationToken);
 
         var record = await ReadAsync(publication.Id, cancellationToken);
-        return PublicationResult<PublishOutcome>.Success(new PublishOutcome(record!, publishedIds.Count, published.Count, excluded, announce));
+        return PublicationResult<PublishOutcome>.Success(new PublishOutcome(record!, moduleCount, published.Count, excluded, announce));
     }
 
-    /// <summary>Moves a scheduled publication (and its grades) to another instant; a live one is <c>publication-live</c>.</summary>
+    /// <summary>
+    /// Moves a scheduled publication, its grades and its announcement to another instant; a live one is
+    /// <c>publication-live</c>. Audits <c>results.rescheduled</c> (and <c>announcement.updated</c> when it announced).
+    /// </summary>
     public async Task<PublicationResult<PublicationRecord>> RescheduleAsync(Guid publicationId, DateTimeOffset publishAt, CancellationToken cancellationToken = default)
     {
         var now = clock.GetUtcNow();
@@ -262,6 +303,12 @@ public sealed class ResultsPublicationService(
             $"UPDATE grades SET published_at = {instant}, updated_at = {now} WHERE publication_id = {publicationId}",
             cancellationToken);
 
+        if (publication.AnnouncementId is { } announcementId)
+        {
+            // "Results are available" must not appear before the results do (review S6 E2).
+            await announcements.MoveAsync(announcementId, instant, AnnouncementWriteScope.Administrator, cancellationToken);
+        }
+
         audit.Record(
             db,
             AuditActions.ResultsRescheduled,
@@ -274,18 +321,19 @@ public sealed class ResultsPublicationService(
         return PublicationResult<PublicationRecord>.Success((await ReadAsync(publicationId, cancellationToken))!);
     }
 
-    /// <summary>Cancels a scheduled publication: its grades go back to Submitted and the row is deleted (the audit keeps it).</summary>
+    /// <summary>Cancels a scheduled publication: its grades go back to Submitted, its announcement and the row are deleted (the audit keeps them).</summary>
     public Task<PublicationResult<RevertedPublication>> CancelAsync(Guid publicationId, CancellationToken cancellationToken = default) =>
         RevertAsync(publicationId, live: false, reason: null, cancellationToken);
 
-    /// <summary>Unpublishes a live publication with a reason: students stop seeing its marks at once.</summary>
+    /// <summary>Unpublishes a live publication with a reason: students stop seeing its marks, and its announcement, at once.</summary>
     public Task<PublicationResult<RevertedPublication>> UnpublishAsync(Guid publicationId, string reason, CancellationToken cancellationToken = default) =>
         RevertAsync(publicationId, live: true, reason, cancellationToken);
 
     /// <summary>
     /// Returns a module's marks of <paramref name="academicYear"/> (default: the settings year) to Draft, when they are
-    /// Submitted or in a still-scheduled publication (whose counts drop accordingly); <c>module-not-submitted</c> for
-    /// a draft or empty module, <c>module-locked</c> once any of them is live.
+    /// Submitted or in a still-scheduled publication (whose counts drop accordingly; a publication left with no grade is
+    /// deleted with its announcement and audited <c>results.cancelled</c>); <c>module-not-submitted</c> for a draft or
+    /// empty module, <c>module-locked</c> once any of them is live.
     /// </summary>
     public async Task<PublicationResult<ReturnedToDraft>> ReturnToDraftAsync(string moduleCode, string? academicYear, string reason, CancellationToken cancellationToken = default)
     {
@@ -299,15 +347,36 @@ public sealed class ResultsPublicationService(
         var now = clock.GetUtcNow();
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // The module's marks lock: no save, submit, publish or enrolment check of this module runs meanwhile, so the
+        // set of publications its grades belong to can only shrink (a cancel or unpublish) until the commit.
         await ModuleMarksLock.AcquireAsync(db, found.Id, cancellationToken);
 
-        // Row locks first, so a publish, cancel or unpublish of these grades either finished before the status is
+        // Publication rows before grade rows, in id order: the order a reschedule, cancel or unpublish takes them in
+        // (publication, then its grades), so a return to draft racing one waits instead of deadlocking (review S6 E9).
+        var publicationIds = await (
+            from g in db.Grades.AsNoTracking()
+            join e in db.Enrolments.AsNoTracking() on new { g.StudentId, g.ModuleId } equals new { e.StudentId, e.ModuleId }
+            where g.ModuleId == found.Id && e.AcademicYear == year && g.PublicationId != null
+            select g.PublicationId!.Value)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        if (publicationIds.Count > 0)
+        {
+            var ids = publicationIds.Order().ToArray();
+            await db.Database.ExecuteSqlAsync(
+                $"SELECT id FROM results_publications WHERE id = ANY({ids}) ORDER BY id FOR UPDATE",
+                cancellationToken);
+        }
+
+        // Then the grade rows, so a publish, cancel or unpublish of these grades either finished before the status is
         // read or waits until this transaction ends.
         await db.Database.ExecuteSqlAsync(
             $"""
             SELECT g.id FROM grades g
             JOIN enrolments e ON e.student_id = g.student_id AND e.module_id = g.module_id
             WHERE g.module_id = {found.Id} AND e.academic_year = {year}
+            ORDER BY g.id
             FOR UPDATE OF g
             """,
             cancellationToken);
@@ -332,13 +401,14 @@ public sealed class ResultsPublicationService(
             r => RawSql.NullableGuid(r, 0),
             cancellationToken);
 
-        var fromPublications = reverted.Where(p => p is not null).GroupBy(p => p!.Value).ToList();
+        var fromPublications = reverted.Where(p => p is not null).GroupBy(p => p!.Value).OrderBy(g => g.Key).ToList();
         foreach (var group in fromPublications)
         {
             var count = group.Count();
             await db.Database.ExecuteSqlAsync(
                 $"UPDATE results_publications SET grade_count = GREATEST(grade_count - {count}, 0), module_count = GREATEST(module_count - 1, 0) WHERE id = {group.Key}",
                 cancellationToken);
+            await RemoveIfEmptyAsync(group.Key, found.Code, cancellationToken);
         }
 
         var fromScheduled = fromPublications.Count > 0;
@@ -358,7 +428,9 @@ public sealed class ResultsPublicationService(
     /// <summary>
     /// Corrects one Submitted or Published grade (a Draft is the lecturers', <c>module-not-submitted</c>): mark and
     /// outcome change, <c>corrected_at</c> is stamped and status, instant and publication are kept, so a published
-    /// correction is what the student sees at once, labelled "Amended". Audits <c>grade.corrected</c>.
+    /// correction is what the student sees at once, labelled "Amended". A correction that changes neither the mark nor
+    /// the outcome is refused (<see cref="PublicationError.CorrectionUnchanged"/>, 400 <c>validation</c>), so nothing is
+    /// labelled "Amended" that was not (review S6 E12). Audits <c>grade.corrected</c>.
     /// </summary>
     public async Task<PublicationResult<CorrectedGrade>> CorrectAsync(
         string moduleCode,
@@ -397,6 +469,11 @@ public sealed class ResultsPublicationService(
 
         var before = new GradeValue(grade.Mark, grade.Outcome);
         var after = new GradeValue(outcome == GradeOutcome.Mark ? mark : null, outcome);
+        if (before == after)
+        {
+            return PublicationResult<CorrectedGrade>.Fail(PublicationError.CorrectionUnchanged);
+        }
+
         grade.Mark = after.Mark;
         grade.Outcome = after.Outcome;
         grade.Version++;
@@ -453,6 +530,39 @@ public sealed class ResultsPublicationService(
         return rows.SingleOrDefault();
     }
 
+    /// <summary>
+    /// After a return to draft took grades out of a scheduled publication: when no grade is left in it, the
+    /// publication would still drive the public countdown and later show as the latest live publication with nothing
+    /// behind it (review S6 E3), so it is deleted with its announcement, audited <c>results.cancelled</c> with
+    /// <c>returnedToDraft</c> naming the module.
+    /// </summary>
+    private async Task RemoveIfEmptyAsync(Guid publicationId, string moduleCode, CancellationToken cancellationToken)
+    {
+        if (await db.Grades.AsNoTracking().AnyAsync(g => g.PublicationId == publicationId, cancellationToken))
+        {
+            return;
+        }
+
+        var publication = await db.ResultsPublications.SingleAsync(p => p.Id == publicationId, cancellationToken);
+        await DeleteAnnouncementOfAsync(publication, cancellationToken);
+        db.ResultsPublications.Remove(publication);
+        audit.Record(
+            db,
+            AuditActions.ResultsCancelled,
+            AuditSubjects.Publication,
+            publicationId.ToString(),
+            new { academicYear = publication.AcademicYear, semester = GradeNames.Of(publication.Semester), grades = 0, returnedToDraft = moduleCode });
+    }
+
+    /// <summary>Soft-deletes the publication's announcement (audited <c>announcement.deleted</c>), when it has one that still stands.</summary>
+    private async Task DeleteAnnouncementOfAsync(ResultsPublication publication, CancellationToken cancellationToken)
+    {
+        if (publication.AnnouncementId is { } announcementId)
+        {
+            await announcements.DeleteAsync(announcementId, AnnouncementWriteScope.Administrator, cancellationToken);
+        }
+    }
+
     private async Task<PublicationResult<RevertedPublication>> RevertAsync(Guid publicationId, bool live, string? reason, CancellationToken cancellationToken)
     {
         var now = clock.GetUtcNow();
@@ -477,6 +587,9 @@ public sealed class ResultsPublicationService(
             WHERE publication_id = {publicationId}
             """,
             cancellationToken);
+
+        // The "results are available" announcement goes with its results (review S6 E2).
+        await DeleteAnnouncementOfAsync(publication, cancellationToken);
         db.ResultsPublications.Remove(publication);
 
         var semester = GradeNames.Of(publication.Semester);

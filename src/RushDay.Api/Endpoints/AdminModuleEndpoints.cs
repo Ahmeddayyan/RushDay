@@ -95,6 +95,11 @@ public static class AdminModuleEndpoints
         var now = clock.GetUtcNow();
         var year = parameters.AcademicYear ?? (await windows.CurrentAsync(cancellationToken)).AcademicYear;
         var page = PageRequest.Of(parameters.Page, parameters.PageSize, LecturerEndpoints.RosterPageSize, LecturerEndpoints.RosterMaxPageSize);
+        if (page.IsTooDeep)
+        {
+            return StaffPatterns.PageTooDeep();
+        }
+
         var rows = await query.ExecuteAsync(module.Id, year, lecturerId: null, parameters.Q, page, cancellationToken);
 
         var catalogueModule = await StaffModules.CatalogueModuleAsync(db, module.Id, cancellationToken);
@@ -113,6 +118,11 @@ public static class AdminModuleEndpoints
 
         var year = parameters.AcademicYear ?? (await windows.CurrentAsync(cancellationToken)).AcademicYear;
         var page = PageRequest.Of(parameters.Page, parameters.PageSize, LecturerEndpoints.MarksPageSize, LecturerEndpoints.MarksMaxPageSize);
+        if (page.IsTooDeep)
+        {
+            return StaffPatterns.PageTooDeep();
+        }
+
         var sheet = await query.ExecuteAsync(module.Id, module.Code, module.Title, year, lecturerId: null, myRole: null, parameters.Q, page, clock.GetUtcNow(), cancellationToken);
         return TypedResults.Ok(MarksSheet.From(sheet));
     }

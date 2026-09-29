@@ -13,7 +13,8 @@ namespace RushDay.Api.Startup;
 /// Everything that happens between <c>Build()</c> and <c>Run()</c> (04-performance-and-ops.md section 7, 01 section 6):
 /// the demo guard → the KEK check → migrate (on <c>ConnectionStrings:Migrations</c> when set) → the key-ring check
 /// (outside Development) → seed, only in demo mode or under <c>--migrate-and-seed</c> → the idempotent backfills,
-/// each step logged with its elapsed time. Every startup statement runs with
+/// each step logged with its elapsed time → <c>ANALYZE</c> of the rewritten tables when this start applied a migration
+/// or a backfill wrote rows. Every startup statement runs with
 /// <c>Database:StartupCommandTimeoutSeconds</c> (600 s), not the request path's 10 s. Any failure aborts startup, so
 /// Render keeps the previous instance (its deploy health check never passes).
 /// </summary>
@@ -81,17 +82,20 @@ public static class StartupTasks
         var clock = scope.ServiceProvider.GetRequiredService<TimeProvider>();
 
         // 3. Migrate.
+        var migrationsConnection = configuration.GetConnectionString("Migrations");
+        var analyze = false;
         if (seedCommand || database.MigrateOnStartup)
         {
             var stopwatch = Stopwatch.StartNew();
-            var migrationsConnection = configuration.GetConnectionString("Migrations");
             if (!string.IsNullOrWhiteSpace(migrationsConnection))
             {
                 await using var migrations = new RushDayDbContext(MigrationsContextOptions(migrationsConnection, startupTimeout));
+                analyze = (await migrations.Database.GetPendingMigrationsAsync()).Any();
                 await migrations.Database.MigrateAsync();
             }
             else
             {
+                analyze = (await db.Database.GetPendingMigrationsAsync()).Any();
                 await db.Database.MigrateAsync();
             }
 
@@ -136,8 +140,24 @@ public static class StartupTasks
                 TimeZone = branding.TimeZone,
                 SeedResultsDay = database.SeedResultsDay,
             };
-            await StartupBackfills.RunAsync(db, backfillOptions, clock, logger);
+            var results = await StartupBackfills.RunAsync(db, backfillOptions, clock, logger);
+            analyze |= results.Any(r => r.RowsAffected > 0);
             logger.LogInformation("Startup backfills complete in {ElapsedMs} ms.", stopwatch.ElapsedMilliseconds);
+        }
+
+        // 7. Planner statistics, when this start applied a migration or a backfill wrote rows (review S6 E16), on the
+        // owner connection when there is one (ANALYZE needs the table's owner).
+        if (analyze)
+        {
+            if (!string.IsNullOrWhiteSpace(migrationsConnection))
+            {
+                await using var owner = new RushDayDbContext(MigrationsContextOptions(migrationsConnection, startupTimeout));
+                await StartupBackfills.AnalyzeAsync(owner, logger);
+            }
+            else
+            {
+                await StartupBackfills.AnalyzeAsync(db, logger);
+            }
         }
 
         return !seedCommand;

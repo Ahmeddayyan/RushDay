@@ -101,6 +101,7 @@ public sealed record SetLecturersRequest
 {
     [Required]
     [MaxLength(50)]
+    [NoNullElements]
     public List<LecturerAssignmentRequest>? Assignments { get; init; }
 
     public IReadOnlyList<LecturerAssignment> ToAssignments() =>

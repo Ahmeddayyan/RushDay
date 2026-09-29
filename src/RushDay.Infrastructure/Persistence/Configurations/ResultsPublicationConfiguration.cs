@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using RushDay.Domain.Announcements;
 using RushDay.Domain.Results;
 using RushDay.Infrastructure.Identity;
 
@@ -22,5 +23,9 @@ internal sealed class ResultsPublicationConfiguration : IEntityTypeConfiguration
             .HasDatabaseName("ix_results_publications_semester_created_at");
 
         builder.HasOne<ApplicationUser>().WithMany().HasForeignKey(p => p.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
+
+        // Migration 20261002120000_ResultsGovernance (review S6 E2). Announcements are only ever soft-deleted; SET NULL
+        // covers the one hard delete there is (a module's cascade, which never reaches a university announcement).
+        builder.HasOne<Announcement>().WithMany().HasForeignKey(p => p.AnnouncementId).OnDelete(DeleteBehavior.SetNull);
     }
 }

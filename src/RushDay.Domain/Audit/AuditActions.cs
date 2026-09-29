@@ -60,6 +60,8 @@ public static class AuditActions
     public const string LecturerUpdated = "lecturer.updated";
     public const string LecturerLeft = "lecturer.left";
 
+    public const string RosterExported = "roster.exported";
+
     public const string AuditExported = "audit.exported";
     public const string OpsReconciled = "ops.reconciled";
     public const string SystemDemoReset = "system.demo_reset";
@@ -81,7 +83,7 @@ public static class AuditActions
             "auth" or "account" => AuditSubjects.Account,
             "enrolment" => AuditSubjects.Enrolment,
             "grade" => AuditSubjects.Grade,
-            "module" => AuditSubjects.Module,
+            "module" or "roster" => AuditSubjects.Module,
             "results" => AuditSubjects.Publication,
             "announcement" => AuditSubjects.Announcement,
             "settings" => AuditSubjects.Settings,

@@ -32,8 +32,12 @@ public sealed class ReconcileService(RushDayDbContext db, AuditWriter audit)
     {
         ArgumentNullException.ThrowIfNull(db);
 
+        // The mode (and order) ReconcileEnrolledCountAsync takes next, which an enrolment's claim takes too: FOR UPDATE
+        // would also block the foreign-key check (FOR KEY SHARE) of every enrolment insert while this runs (joint
+        // item J2). Taken here rather than left to the reconciliation so the "before" values are exactly what it
+        // replaces.
         var before = await db.Modules
-            .FromSql($"SELECT * FROM modules ORDER BY id FOR UPDATE")
+            .FromSql($"SELECT * FROM modules ORDER BY id FOR NO KEY UPDATE")
             .AsNoTracking()
             .Select(m => new { m.Id, m.Code, m.EnrolledCount })
             .ToListAsync(cancellationToken);

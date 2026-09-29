@@ -39,6 +39,15 @@ public static class StaffPatterns
     public const int ReasonMaxLength = 400;
     public const int SearchMaxLength = 100;
 
+    /// <summary>
+    /// 400 <c>validation</c> for a page that ends beyond row <see cref="PageRequest.MaxRows"/> (review S6 E14), with the
+    /// field error on <c>page</c>.
+    /// </summary>
+    public static IResult PageTooDeep() => Security.ProblemResults.Problem(
+        Security.ProblemTypes.Validation,
+        $"Pages stop at row {PageRequest.MaxRows:N0}; narrow the search or use the export.",
+        new Dictionary<string, object?> { ["errors"] = new Dictionary<string, string[]> { ["page"] = [$"page x pageSize may not exceed {PageRequest.MaxRows}."] } });
+
     public static Semester? ParseSemester(string? value) =>
         string.Equals(value, "autumn", StringComparison.OrdinalIgnoreCase) ? RushDay.Domain.Modules.Semester.Autumn
         : string.Equals(value, "spring", StringComparison.OrdinalIgnoreCase) ? RushDay.Domain.Modules.Semester.Spring
@@ -58,6 +67,23 @@ public sealed class NoNulAttribute : ValidationAttribute
     }
 
     public override bool IsValid(object? value) => value is not string text || !text.Contains('\0', StringComparison.Ordinal);
+}
+
+/// <summary>
+/// Rejects a JSON array with a <c>null</c> element (<c>{"rows":[null]}</c>): minimal API validation skips a null item,
+/// and the handler would then dereference it, a 500 instead of the 400 <c>validation</c> the caller deserves (review
+/// S6 E11).
+/// </summary>
+[AttributeUsage(AttributeTargets.Property | AttributeTargets.Parameter | AttributeTargets.Field)]
+public sealed class NoNullElementsAttribute : ValidationAttribute
+{
+    public NoNullElementsAttribute()
+        : base("The list must not contain null.")
+    {
+    }
+
+    public override bool IsValid(object? value) =>
+        value is not System.Collections.IEnumerable items || items.Cast<object?>().All(item => item is not null);
 }
 
 /// <summary><c>MarksStatus</c> of 02-api.md section 7.</summary>
@@ -232,12 +258,13 @@ public sealed record SaveMarksRequest : IValidatableObject
     [Required]
     [MinLength(1)]
     [MaxLength(MarksService.MaxRowsPerRequest)]
+    [NoNullElements]
     public List<MarkRowRequest>? Rows { get; init; }
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         var duplicates = (Rows ?? [])
-            .Where(r => r.StudentNumber is not null)
+            .Where(r => r?.StudentNumber is not null)
             .GroupBy(r => r.StudentNumber!.ToUpperInvariant(), StringComparer.Ordinal)
             .Any(g => g.Count() > 1);
         if (duplicates)

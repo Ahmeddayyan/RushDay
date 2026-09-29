@@ -46,6 +46,11 @@ public static class AdminAccountEndpoints
     private static async Task<IResult> ListAsync([AsParameters] AccountListParameters parameters, AdminAccountQuery query, TimeProvider clock, CancellationToken cancellationToken)
     {
         var page = PageRequest.Of(parameters.Page, parameters.PageSize, DefaultPageSize, MaxPageSize);
+        if (page.IsTooDeep)
+        {
+            return StaffPatterns.PageTooDeep();
+        }
+
         var rows = await query.ListAsync(parameters.Q, RoleNameAttribute.Canonical(parameters.Role), parameters.ParsedState(), page, clock.GetUtcNow(), cancellationToken);
         return TypedResults.Ok(new Paged<AccountView>([.. rows.Items.Select(AccountView.From)], rows.Page, rows.PageSize, rows.Total));
     }
@@ -157,6 +162,7 @@ public static class AdminAccountEndpoints
         AccountError.SelfLockout => ProblemResults.Problem(ProblemTypes.SelfLockout, "You cannot lock or disable your own account."),
         AccountError.UsernameTaken => ProblemResults.Problem(ProblemTypes.UsernameTaken, "That username is taken."),
         AccountError.PrincipalHasAccount => ProblemResults.Problem(ProblemTypes.PrincipalHasAccount, "That student or lecturer already has an account."),
+        AccountError.PrincipalLeft => ProblemResults.Problem(ProblemTypes.PrincipalLeft, "That student or lecturer has left, so their account cannot be created or enabled."),
         AccountError.RolePrincipalMismatch => ProblemResults.Problem(ProblemTypes.RolePrincipalMismatch, "A Student needs a student number, a Lecturer a staff number, and an Admin neither."),
         AccountError.WeakPassword => ProblemResults.Problem(
             ProblemTypes.WeakPassword,

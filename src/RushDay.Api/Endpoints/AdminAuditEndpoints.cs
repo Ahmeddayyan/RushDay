@@ -38,6 +38,11 @@ public static class AdminAuditEndpoints
     private static async Task<IResult> ListAsync([AsParameters] AuditParameters parameters, AuditQuery query, CancellationToken cancellationToken)
     {
         var page = PageRequest.Of(parameters.Page, parameters.PageSize, DefaultPageSize, MaxPageSize);
+        if (page.IsTooDeep)
+        {
+            return StaffPatterns.PageTooDeep();
+        }
+
         var rows = await query.ListAsync(parameters.ToFilter(), page, cancellationToken);
         return TypedResults.Ok(new Paged<AuditEventView>([.. rows.Items.Select(AuditEventView.From)], rows.Page, rows.PageSize, rows.Total));
     }

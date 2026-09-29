@@ -20,7 +20,7 @@ public sealed record PublicationBriefs(PublicationSnapshot? Next, PublicationSna
 /// <c>publications:brief</c>, 60 s. The cached value is the list of publication instants, not the answer: which one is
 /// "next" and which "latest" is decided against the caller's clock on every read, so a publication becomes live at
 /// its instant exactly rather than up to a minute later. Invalidated by publish, reschedule, cancel, unpublish and
-/// return-to-draft (S6).
+/// return-to-draft (S6); the key is generation-versioned (joint item J5), so a fill in flight at a change cannot outlive it.
 /// </summary>
 public sealed class PublicationCache(HybridCache cache, IDbContextFactory<RushDayDbContext> contexts, ICacheMetrics metrics)
 {
@@ -28,7 +28,7 @@ public sealed class PublicationCache(HybridCache cache, IDbContextFactory<RushDa
 
     public async ValueTask<PublicationBriefs> GetBriefAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
     {
-        var holder = await cache.GetOrCreateAsync(
+        var holder = await cache.GetOrCreateVersionedAsync(
             metrics,
             CacheKeys.PublicationsBrief,
             CacheKeys.PublicationsBrief,
@@ -40,7 +40,7 @@ public sealed class PublicationCache(HybridCache cache, IDbContextFactory<RushDa
     }
 
     public ValueTask InvalidateAsync(CancellationToken cancellationToken = default) =>
-        cache.RemoveAsync(CacheKeys.PublicationsBrief, cancellationToken);
+        cache.InvalidateVersionedAsync(CacheKeys.PublicationsBrief, cancellationToken);
 
     /// <summary>Next = earliest <c>publish_at &gt; now</c>; latest = latest <c>publish_at &lt;= now</c>.</summary>
     public static PublicationBriefs Brief(IEnumerable<PublicationSnapshot> publications, DateTimeOffset now)

@@ -23,6 +23,9 @@ public enum AccountError
     RolePrincipalMismatch,
     WeakPassword,
     InvalidCurrentPassword,
+
+    /// <summary>The student or lecturer has left (<c>left_at</c> set): no account is provisioned or re-enabled for them (409 <c>principal-left</c>, review S6 E5).</summary>
+    PrincipalLeft,
 }
 
 /// <summary>The outcome of an account operation: a value, or an error with optional policy codes (for <c>weak-password</c>).</summary>
@@ -107,11 +110,18 @@ public sealed class AccountService(
         if (needsStudent)
         {
             var number = request.StudentNumber!.Trim().ToUpperInvariant();
-            studentId = await db.Students.AsNoTracking().Where(s => s.StudentNumber == number).Select(s => (Guid?)s.Id).SingleOrDefaultAsync(cancellationToken);
-            if (studentId is null)
+            var student = await db.Students.AsNoTracking().Where(s => s.StudentNumber == number).Select(s => new { s.Id, s.LeftAt }).SingleOrDefaultAsync(cancellationToken);
+            if (student is null)
             {
                 return AccountResult<ProvisionedAccount>.Fail(AccountError.StudentNotFound);
             }
+
+            if (student.LeftAt is not null)
+            {
+                return AccountResult<ProvisionedAccount>.Fail(AccountError.PrincipalLeft);
+            }
+
+            studentId = student.Id;
 
             if (await db.Users.AnyAsync(u => u.StudentId == studentId, cancellationToken))
             {
@@ -122,11 +132,19 @@ public sealed class AccountService(
         if (needsLecturer)
         {
             var number = request.StaffNumber!.Trim().ToUpperInvariant();
-            lecturerId = await db.Lecturers.AsNoTracking().Where(l => l.StaffNumber == number).Select(l => (Guid?)l.Id).SingleOrDefaultAsync(cancellationToken);
-            if (lecturerId is null)
+            var lecturer = await db.Lecturers.AsNoTracking().Where(l => l.StaffNumber == number).Select(l => new { l.Id, l.LeftAt }).SingleOrDefaultAsync(cancellationToken);
+            if (lecturer is null)
             {
                 return AccountResult<ProvisionedAccount>.Fail(AccountError.LecturerNotFound);
             }
+
+            // A lecturer who has left would regain their modules (review S6 E5); a student who has left, a login.
+            if (lecturer.LeftAt is not null)
+            {
+                return AccountResult<ProvisionedAccount>.Fail(AccountError.PrincipalLeft);
+            }
+
+            lecturerId = lecturer.Id;
 
             if (await db.Users.AnyAsync(u => u.LecturerId == lecturerId, cancellationToken))
             {
@@ -216,12 +234,20 @@ public sealed class AccountService(
             return Task.FromResult<IReadOnlyList<string>>([]);
         }, cancellationToken);
 
+    /// <summary>Re-enables an account, unless its student or lecturer has left (<c>principal-left</c>, review S6 E5).</summary>
     public Task<AccountResult<ApplicationUser>> EnableAsync(Guid userId, CancellationToken cancellationToken = default) =>
-        MutateAsync(userId, AuditActions.AccountEnabled, forbidSelf: false, rotateStamp: false, user =>
-        {
-            user.DisabledAt = null;
-            return Task.FromResult<IReadOnlyList<string>>([]);
-        }, cancellationToken);
+        MutateAsync(
+            userId,
+            AuditActions.AccountEnabled,
+            forbidSelf: false,
+            rotateStamp: false,
+            user =>
+            {
+                user.DisabledAt = null;
+                return Task.FromResult<IReadOnlyList<string>>([]);
+            },
+            cancellationToken,
+            precondition: async user => await PrincipalHasLeftAsync(user, cancellationToken) ? AccountError.PrincipalLeft : AccountError.None);
 
     /// <summary>Sets a new temporary password (generated when omitted) and forces a change at the next sign-in.</summary>
     public async Task<AccountResult<string>> ResetPasswordAsync(Guid userId, string? temporaryPassword, CancellationToken cancellationToken = default)
@@ -335,13 +361,18 @@ public sealed class AccountService(
         return codes;
     }
 
+    private async Task<bool> PrincipalHasLeftAsync(ApplicationUser user, CancellationToken cancellationToken) =>
+        (user.StudentId is { } studentId && await db.Students.AsNoTracking().AnyAsync(s => s.Id == studentId && s.LeftAt != null, cancellationToken))
+        || (user.LecturerId is { } lecturerId && await db.Lecturers.AsNoTracking().AnyAsync(l => l.Id == lecturerId && l.LeftAt != null, cancellationToken));
+
     private async Task<AccountResult<ApplicationUser>> MutateAsync(
         Guid userId,
         string action,
         bool forbidSelf,
         bool rotateStamp,
         Func<ApplicationUser, Task<IReadOnlyList<string>>> change,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<ApplicationUser, Task<AccountError>>? precondition = null)
     {
         var user = await users.FindByIdAsync(userId.ToString());
         if (user is null)
@@ -359,6 +390,11 @@ public sealed class AccountService(
         if (forbidSelf && actor.ActorUserId == user.Id)
         {
             return AccountResult<ApplicationUser>.Fail(AccountError.SelfLockout);
+        }
+
+        if (precondition is not null && await precondition(user) is var refused && refused != AccountError.None)
+        {
+            return AccountResult<ApplicationUser>.Fail(refused);
         }
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);

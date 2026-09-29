@@ -15,8 +15,9 @@ namespace RushDay.Api.Endpoints;
 /// The results lifecycle, <c>/api/admin/results</c> (02-api.md section 8.5, D8, D9): submission progress for a (year,
 /// semester), publish at an instant (only publishable modules; up to 90 days ahead; optionally with a pinned
 /// announcement), reschedule and cancel while scheduled, unpublish once live, return a module to draft, correct one
-/// mark. Every mutation invalidates <c>publications:brief</c> after it commits, and a publish with <c>announce</c>
-/// also <c>announcements:university</c>.
+/// mark. Every mutation invalidates <c>publications:brief</c> after it commits; a publish with <c>announce</c>, and
+/// every reschedule, cancel, unpublish and return to draft (which move or delete a publication's announcement), also
+/// <c>announcements:university</c>.
 /// </summary>
 public static class AdminResultsEndpoints
 {
@@ -92,7 +93,7 @@ public static class AdminResultsEndpoints
     }
 
     // PUT /api/admin/results/publications/{id}: only while scheduled.
-    private static async Task<IResult> RescheduleAsync(Guid id, ReschedulePublicationRequest request, ResultsPublicationService publications, PublicationCache briefs, TimeProvider clock, CancellationToken cancellationToken)
+    private static async Task<IResult> RescheduleAsync(Guid id, ReschedulePublicationRequest request, ResultsPublicationService publications, PublicationCache briefs, AnnouncementCache announcements, TimeProvider clock, CancellationToken cancellationToken)
     {
         var result = await publications.RescheduleAsync(id, request.PublishAt!.Value, cancellationToken);
         if (!result.Succeeded)
@@ -100,12 +101,12 @@ public static class AdminResultsEndpoints
             return Problem(result.Error);
         }
 
-        await briefs.InvalidateAsync(cancellationToken);
+        await InvalidateAsync(briefs, announcements, cancellationToken);
         return TypedResults.Ok(PublicationInfo.From(result.Value!, clock.GetUtcNow()));
     }
 
     // DELETE /api/admin/results/publications/{id}: cancel, only while scheduled.
-    private static async Task<IResult> CancelAsync(Guid id, ResultsPublicationService publications, PublicationCache briefs, CancellationToken cancellationToken)
+    private static async Task<IResult> CancelAsync(Guid id, ResultsPublicationService publications, PublicationCache briefs, AnnouncementCache announcements, CancellationToken cancellationToken)
     {
         var result = await publications.CancelAsync(id, cancellationToken);
         if (!result.Succeeded)
@@ -113,12 +114,12 @@ public static class AdminResultsEndpoints
             return Problem(result.Error);
         }
 
-        await briefs.InvalidateAsync(cancellationToken);
+        await InvalidateAsync(briefs, announcements, cancellationToken);
         return TypedResults.Ok(RevertedPublicationResponse.From(result.Value!));
     }
 
     // POST /api/admin/results/publications/{id}/unpublish: only once live; students stop seeing the marks at once.
-    private static async Task<IResult> UnpublishAsync(Guid id, ReasonRequest request, ResultsPublicationService publications, PublicationCache briefs, CancellationToken cancellationToken)
+    private static async Task<IResult> UnpublishAsync(Guid id, ReasonRequest request, ResultsPublicationService publications, PublicationCache briefs, AnnouncementCache announcements, CancellationToken cancellationToken)
     {
         var result = await publications.UnpublishAsync(id, request.Reason!, cancellationToken);
         if (!result.Succeeded)
@@ -126,12 +127,12 @@ public static class AdminResultsEndpoints
             return Problem(result.Error);
         }
 
-        await briefs.InvalidateAsync(cancellationToken);
+        await InvalidateAsync(briefs, announcements, cancellationToken);
         return TypedResults.Ok(RevertedPublicationResponse.From(result.Value!));
     }
 
     // POST /api/admin/results/modules/{code}/return-to-draft
-    private static async Task<IResult> ReturnToDraftAsync(string code, ReturnToDraftRequest request, ResultsPublicationService publications, PublicationCache briefs, CancellationToken cancellationToken)
+    private static async Task<IResult> ReturnToDraftAsync(string code, ReturnToDraftRequest request, ResultsPublicationService publications, PublicationCache briefs, AnnouncementCache announcements, CancellationToken cancellationToken)
     {
         var result = await publications.ReturnToDraftAsync(code, request.AcademicYear, request.Reason!, cancellationToken);
         if (!result.Succeeded)
@@ -139,7 +140,7 @@ public static class AdminResultsEndpoints
             return Problem(result.Error);
         }
 
-        await briefs.InvalidateAsync(cancellationToken);
+        await InvalidateAsync(briefs, announcements, cancellationToken);
         return TypedResults.Ok(new ReturnToDraftResponse(result.Value!.Code, MarksState.Draft, result.Value.FromScheduledPublication));
     }
 
@@ -168,8 +169,23 @@ public static class AdminResultsEndpoints
         return TypedResults.Ok(CorrectMarkResponse.From(result.Value!));
     }
 
+    /// <summary>
+    /// After a reschedule, cancel, unpublish or return to draft has committed: the brief, and the university
+    /// announcements, since a publication's "results are available" announcement moves or goes with it (review S6 E2,
+    /// E3). Both keys are generation-versioned, so a fill that read the rows before the commit is retired.
+    /// </summary>
+    private static async Task InvalidateAsync(PublicationCache briefs, AnnouncementCache announcements, CancellationToken cancellationToken)
+    {
+        await briefs.InvalidateAsync(cancellationToken);
+        await announcements.InvalidateAsync(cancellationToken);
+    }
+
     private static IResult Problem(PublicationError error) => error switch
     {
+        PublicationError.CorrectionUnchanged => ProblemResults.Problem(
+            ProblemTypes.Validation,
+            "A correction must change the mark or the outcome.",
+            new Dictionary<string, object?> { ["errors"] = new Dictionary<string, string[]> { ["mark"] = ["The corrected mark and outcome are the ones already recorded."] } }),
         PublicationError.NothingToPublish => ProblemResults.Problem(ProblemTypes.NothingToPublish, "No module of that semester is submitted with every mark entered."),
         PublicationError.PublishTooFarAhead => ProblemResults.Problem(ProblemTypes.PublishTooFarAhead, "Results can be scheduled at most 90 days ahead."),
         PublicationError.PublicationNotFound => ProblemResults.Problem(ProblemTypes.PublicationNotFound, "No publication has that id."),

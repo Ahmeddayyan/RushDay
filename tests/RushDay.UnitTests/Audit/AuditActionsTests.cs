@@ -13,7 +13,7 @@ public sealed partial class AuditActionsTests
             .Select(f => (string)f.GetRawConstantValue()!)
             .ToList();
 
-    /// <summary>The 48 actions of 03-security.md section 7, verbatim.</summary>
+    /// <summary>The 49 actions of 03-security.md section 7, verbatim.</summary>
     private static readonly string[] Catalogue =
     [
         "auth.locked_out", "auth.password_changed",
@@ -34,6 +34,7 @@ public sealed partial class AuditActionsTests
         "student.viewed",
         "student.exported", "student.exported_self",
         "lecturer.created", "lecturer.updated", "lecturer.left",
+        "roster.exported",
         "audit.exported",
         "ops.reconciled",
         "system.demo_reset",
@@ -41,10 +42,10 @@ public sealed partial class AuditActionsTests
     ];
 
     [Fact]
-    public void Catalogue_has_forty_eight_actions()
+    public void Catalogue_has_forty_nine_actions()
     {
-        Assert.Equal(48, Catalogue.Length);
-        Assert.Equal(48, Actions().Count);
+        Assert.Equal(49, Catalogue.Length);
+        Assert.Equal(49, Actions().Count);
     }
 
     [Fact]
@@ -89,6 +90,7 @@ public sealed partial class AuditActionsTests
     [InlineData("window.updated", AuditSubjects.Window)]
     [InlineData("student.exported_self", AuditSubjects.Student)]
     [InlineData("lecturer.left", AuditSubjects.Lecturer)]
+    [InlineData("roster.exported", AuditSubjects.Module)]
     [InlineData("audit.exported", AuditSubjects.System)]
     [InlineData("ops.reconciled", AuditSubjects.System)]
     [InlineData("system.demo_accounts_disabled", AuditSubjects.System)]

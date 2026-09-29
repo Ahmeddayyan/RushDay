@@ -8,8 +8,10 @@ namespace RushDay.Infrastructure.Caching;
 /// <summary>
 /// <c>lecturer-modules:{lecturerId}</c>, 60 s: the module codes a lecturer is assigned to, for the
 /// <c>TeachesModule</c> policy (02-api.md section 4). Invalidated by <c>PUT /api/admin/modules/{code}/lecturers</c>
-/// for every lecturer added or removed (S6). An unknown lecturer or code yields an empty set, so a non-member always
-/// gets 403, never 404.
+/// for every lecturer added or removed and by a lecturer leaving (S6). A lecturer who has left teaches nothing (review
+/// S6 E5). An unknown lecturer or code yields an empty set, so a non-member always gets 403, never 404. The key is
+/// generation-versioned (joint item J5), so a fill that read the assignments before a removal committed cannot keep
+/// the removed lecturer in for another lifetime.
 /// </summary>
 public sealed class LecturerModuleCache(HybridCache cache, IDbContextFactory<RushDayDbContext> contexts, ICacheMetrics metrics)
 {
@@ -17,7 +19,7 @@ public sealed class LecturerModuleCache(HybridCache cache, IDbContextFactory<Rus
 
     public async ValueTask<IReadOnlyList<string>> GetCodesAsync(Guid lecturerId, CancellationToken cancellationToken = default)
     {
-        var holder = await cache.GetOrCreateAsync(
+        var holder = await cache.GetOrCreateVersionedAsync(
             metrics,
             CacheKeys.LecturerModules(lecturerId),
             CacheKeys.LecturerModulesName,
@@ -34,16 +36,19 @@ public sealed class LecturerModuleCache(HybridCache cache, IDbContextFactory<Rus
     }
 
     public ValueTask InvalidateAsync(Guid lecturerId, CancellationToken cancellationToken = default) =>
-        cache.RemoveAsync(CacheKeys.LecturerModules(lecturerId), cancellationToken);
+        cache.InvalidateVersionedAsync(CacheKeys.LecturerModules(lecturerId), cancellationToken);
 
     // Its own context: the fill may outlive the request that started it (04-performance-and-ops.md section 4).
     private async Task<string[]> LoadAsync(Guid lecturerId, CancellationToken cancellationToken)
     {
         await using var db = await contexts.CreateDbContextAsync(cancellationToken);
-        return await db.ModuleLecturers.AsNoTracking()
-            .Where(ml => ml.LecturerId == lecturerId)
-            .Join(db.Modules, ml => ml.ModuleId, m => m.Id, (_, m) => m.Code)
-            .OrderBy(code => code)
+        return await (
+                from ml in db.ModuleLecturers.AsNoTracking()
+                join l in db.Lecturers.AsNoTracking() on ml.LecturerId equals l.Id
+                join m in db.Modules.AsNoTracking() on ml.ModuleId equals m.Id
+                where ml.LecturerId == lecturerId && l.LeftAt == null
+                orderby m.Code
+                select m.Code)
             .ToArrayAsync(cancellationToken);
     }
 

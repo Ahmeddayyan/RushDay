@@ -20,4 +20,11 @@ public sealed class ResultsPublication
     public int GradeCount { get; set; }
     public int ModuleCount { get; set; }
     public string? Note { get; set; }
+
+    /// <summary>
+    /// The pinned "results are available" announcement a publish with <c>announce</c> posted, which follows the
+    /// publication: a reschedule moves it, and a cancel, an unpublish or a return to draft that empties the publication
+    /// deletes it. Null when the publish did not announce (and for the seed).
+    /// </summary>
+    public Guid? AnnouncementId { get; set; }
 }

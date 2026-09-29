@@ -183,6 +183,37 @@ public static class StartupBackfills
     }
 
     /// <summary>
+    /// The tables a migration or the backfills rewrite, analyzed at the end of a start that changed them (review S6
+    /// E16): after the migration the planner has no statistics for the new columns (<c>enrolments.academic_year</c>,
+    /// <c>grades.status</c>, ...) until autovacuum gets round to it, and the admin results query ran 180 ms with an
+    /// on-disk sort instead of 56 ms.
+    /// </summary>
+    public const string AnalyzeSql =
+        "ANALYZE users, user_roles, students, lecturers, modules, module_lecturers, enrolments, grades, results_publications, announcements, enrolment_windows, academic_settings";
+
+    /// <summary>
+    /// Refreshes the planner's statistics on the tables of <see cref="AnalyzeSql"/> (a sample of each, a few hundred
+    /// milliseconds on the demo data). A role that does not own a table gets a warning from PostgreSQL and the table is
+    /// skipped; any other failure is logged and ignored, because stale statistics slow queries but break nothing.
+    /// </summary>
+    public static async Task AnalyzeAsync(RushDayDbContext db, ILogger logger, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(AnalyzeSql, cancellationToken);
+            logger.LogInformation("Planner statistics refreshed in {ElapsedMs} ms.", stopwatch.ElapsedMilliseconds);
+        }
+        catch (Npgsql.PostgresException exception)
+        {
+            logger.LogWarning("Planner statistics were not refreshed ({SqlState}); autovacuum will catch up.", exception.SqlState);
+        }
+    }
+
+    /// <summary>
     /// Runs the two year-scoped reconciliation statements in one transaction (the caller's when there is one, as in the
     /// settings year change and the startup step; else its own) and returns the number of module rows corrected. Every
     /// module row is locked first (<see cref="ReconcileLockModulesSql"/>, id order, the mode an enrolment's claim takes),

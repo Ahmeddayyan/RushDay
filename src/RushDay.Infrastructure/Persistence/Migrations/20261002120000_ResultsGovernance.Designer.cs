@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using RushDay.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using RushDay.Infrastructure.Persistence;
 namespace RushDay.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(RushDayDbContext))]
-    partial class RushDayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261002120000_ResultsGovernance")]
+    partial class ResultsGovernance
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

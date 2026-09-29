@@ -25,9 +25,35 @@ public sealed record AnnouncementViewer(Guid? StudentId, Guid? LecturerId, bool 
 public sealed record AnnouncementDraft(string Title, string Body, bool Pinned = false, DateTimeOffset? PublishedAt = null, DateTimeOffset? ExpiresAt = null);
 
 /// <summary>
-/// Announcements (00-overview.md section 4.4, 02-api.md sections 8.2, 8.4, 8.5). Reads for every role; create, update
-/// and soft delete for the lecturer and administrator routes (S6), each audited in the same save and invalidating
-/// <c>announcements:university</c> when a university announcement changes.
+/// Whom an announcement write acts for (review S4 D6, joint item J3), stated at every call site instead of being
+/// inferred from a null module id: <see cref="Administrator"/> (a new announcement is university-wide; an edit or a
+/// delete may reach an announcement of any scope) or <see cref="Module"/> (a module's lecturers: created on that module,
+/// and an edit or a delete reaches only that module's rows). There is no other value; lecturer calls get theirs only
+/// from the module resolved through <c>module_lecturers</c>.
+/// </summary>
+public sealed class AnnouncementWriteScope
+{
+    private AnnouncementWriteScope(Guid? moduleId) => ModuleId = moduleId;
+
+    /// <summary>The administrator routes and the results publication.</summary>
+    public static AnnouncementWriteScope Administrator { get; } = new(null);
+
+    /// <summary>The module's id when the write is a module's lecturers'; null only for <see cref="Administrator"/>.</summary>
+    public Guid? ModuleId { get; }
+
+    public bool IsAdministrator => ModuleId is null;
+
+    /// <summary>A module's lecturers, on the module they teach.</summary>
+    public static AnnouncementWriteScope Module(Guid moduleId) =>
+        moduleId == Guid.Empty ? throw new ArgumentException("A module scope needs the module's id.", nameof(moduleId)) : new(moduleId);
+}
+
+/// <summary>
+/// Announcements (00-overview.md section 4.4, 02-api.md sections 8.2, 8.4, 8.5). Reads for every role; create, update,
+/// move and soft delete for the lecturer and administrator routes (S6) and the results publication, each audited in
+/// the same save. A change to a university announcement invalidates <c>announcements:university</c> after its save
+/// when the service owns the transaction; inside a caller's transaction (a publish, a reschedule, a cancel) the
+/// caller invalidates after its commit, so no fill can store the pre-commit list under the new generation.
 /// </summary>
 public sealed class AnnouncementService(
     RushDayDbContext db,
@@ -95,17 +121,21 @@ public sealed class AnnouncementService(
         return await AnnouncementQueries.Project(db, rows).ToListAsync(cancellationToken);
     }
 
-    /// <summary>Creates a university announcement (<paramref name="moduleId"/> null) or one on a module; audits <c>announcement.created</c>.</summary>
-    public async Task<AnnouncementRecord> CreateAsync(AnnouncementDraft draft, Guid? moduleId, Guid actorUserId, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Creates an announcement for <paramref name="scope"/>: a university one for <see cref="AnnouncementWriteScope.Administrator"/>,
+    /// else one on the scope's module; audits <c>announcement.created</c>.
+    /// </summary>
+    public async Task<AnnouncementRecord> CreateAsync(AnnouncementDraft draft, AnnouncementWriteScope scope, Guid actorUserId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(draft);
+        ArgumentNullException.ThrowIfNull(scope);
 
         var now = clock.GetUtcNow();
         var announcement = new Announcement
         {
             Id = Guid.CreateVersion7(),
-            Scope = moduleId is null ? AnnouncementScope.University : AnnouncementScope.Module,
-            ModuleId = moduleId,
+            Scope = scope.IsAdministrator ? AnnouncementScope.University : AnnouncementScope.Module,
+            ModuleId = scope.ModuleId,
             Title = draft.Title,
             Body = draft.Body,
             Pinned = draft.Pinned,
@@ -117,7 +147,7 @@ public sealed class AnnouncementService(
         };
         db.Announcements.Add(announcement);
 
-        var moduleCode = await ModuleCodeAsync(moduleId, cancellationToken);
+        var moduleCode = await ModuleCodeAsync(scope.ModuleId, cancellationToken);
         Audit(AuditActions.AnnouncementCreated, announcement, moduleCode);
         await db.SaveChangesAsync(cancellationToken);
         await InvalidateIfUniversityAsync(announcement.Scope, cancellationToken);
@@ -126,16 +156,16 @@ public sealed class AnnouncementService(
     }
 
     /// <summary>
-    /// Updates an announcement; audits <c>announcement.updated</c>. With <paramref name="moduleScope"/> the row is
-    /// resolved only as <c>id = @id AND scope = 'Module' AND module_id = @moduleScope AND deleted_at IS NULL</c> (the
-    /// lecturer routes, 02-api.md section 8.4); without it any scope that is not deleted (administrators). Null when
-    /// no such row exists (404 <c>announcement-not-found</c>).
+    /// Updates an announcement; audits <c>announcement.updated</c>. For a module scope the row is resolved only as
+    /// <c>id = @id AND scope = 'Module' AND module_id = @module AND deleted_at IS NULL</c> (the lecturer routes, 02-api.md
+    /// section 8.4); for the administrator any scope that is not deleted. Null when no such row exists (404
+    /// <c>announcement-not-found</c>).
     /// </summary>
-    public async Task<AnnouncementRecord?> UpdateAsync(Guid id, AnnouncementDraft draft, Guid? moduleScope, CancellationToken cancellationToken = default)
+    public async Task<AnnouncementRecord?> UpdateAsync(Guid id, AnnouncementDraft draft, AnnouncementWriteScope scope, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(draft);
 
-        var announcement = await FindEditableAsync(id, moduleScope, cancellationToken);
+        var announcement = await FindEditableAsync(id, scope, cancellationToken);
         if (announcement is null)
         {
             return null;
@@ -156,10 +186,32 @@ public sealed class AnnouncementService(
         return await ReadAsync(announcement.Id, cancellationToken);
     }
 
-    /// <summary>Soft-deletes an announcement (resolved as in <see cref="UpdateAsync"/>); audits <c>announcement.deleted</c>. False when not found.</summary>
-    public async Task<bool> DeleteAsync(Guid id, Guid? moduleScope, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Moves an announcement to another instant (resolved as in <see cref="UpdateAsync"/>), everything else unchanged;
+    /// audits <c>announcement.updated</c>. A rescheduled publication moves its "results are available" announcement
+    /// with it (review S6 E2). False when not found (or already deleted).
+    /// </summary>
+    public async Task<bool> MoveAsync(Guid id, DateTimeOffset publishedAt, AnnouncementWriteScope scope, CancellationToken cancellationToken = default)
     {
-        var announcement = await FindEditableAsync(id, moduleScope, cancellationToken);
+        var announcement = await FindEditableAsync(id, scope, cancellationToken);
+        if (announcement is null)
+        {
+            return false;
+        }
+
+        announcement.PublishedAt = publishedAt;
+        announcement.UpdatedAt = clock.GetUtcNow();
+
+        Audit(AuditActions.AnnouncementUpdated, announcement, await ModuleCodeAsync(announcement.ModuleId, cancellationToken));
+        await db.SaveChangesAsync(cancellationToken);
+        await InvalidateIfUniversityAsync(announcement.Scope, cancellationToken);
+        return true;
+    }
+
+    /// <summary>Soft-deletes an announcement (resolved as in <see cref="UpdateAsync"/>); audits <c>announcement.deleted</c>. False when not found.</summary>
+    public async Task<bool> DeleteAsync(Guid id, AnnouncementWriteScope scope, CancellationToken cancellationToken = default)
+    {
+        var announcement = await FindEditableAsync(id, scope, cancellationToken);
         if (announcement is null)
         {
             return false;
@@ -175,10 +227,12 @@ public sealed class AnnouncementService(
         return true;
     }
 
-    private Task<Announcement?> FindEditableAsync(Guid id, Guid? moduleScope, CancellationToken cancellationToken)
+    private Task<Announcement?> FindEditableAsync(Guid id, AnnouncementWriteScope scope, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(scope);
+
         var rows = db.Announcements.Where(a => a.Id == id && a.DeletedAt == null);
-        if (moduleScope is { } moduleId)
+        if (scope.ModuleId is { } moduleId)
         {
             rows = rows.Where(a => a.Scope == AnnouncementScope.Module && a.ModuleId == moduleId);
         }
@@ -203,9 +257,13 @@ public sealed class AnnouncementService(
             new { scope = announcement.Scope == AnnouncementScope.University ? "university" : "module", moduleCode, title = announcement.Title },
             moduleId: announcement.ModuleId);
 
+    /// <summary>
+    /// Only when the save was the service's own: inside a caller's transaction the change is not committed yet, so a
+    /// fill started now would read the old rows into the new generation; that caller invalidates after its commit.
+    /// </summary>
     private async Task InvalidateIfUniversityAsync(AnnouncementScope scope, CancellationToken cancellationToken)
     {
-        if (scope == AnnouncementScope.University)
+        if (scope == AnnouncementScope.University && db.Database.CurrentTransaction is null)
         {
             await universityCache.InvalidateAsync(cancellationToken);
         }

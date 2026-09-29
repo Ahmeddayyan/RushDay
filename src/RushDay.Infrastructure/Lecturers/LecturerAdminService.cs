@@ -127,6 +127,13 @@ public sealed class LecturerAdminService(
             return LecturerAdminResult<string>.Fail(LecturerAdminError.LecturerNotFound);
         }
 
+        // The rule of leave: a demo actor (public password) may not change a real account, and the edit renames the
+        // linked login (review S6 E6). A demo account's display name does follow its record.
+        if (actor.ActorIsDemo && await db.Users.AsNoTracking().AnyAsync(u => u.LecturerId == lecturer.Id && !u.IsDemo, cancellationToken))
+        {
+            return LecturerAdminResult<string>.Fail(LecturerAdminError.DemoAccount);
+        }
+
         var before = Snapshot(lecturer);
         lecturer.FullName = change.FullName;
         lecturer.Title = change.Title;
@@ -187,6 +194,13 @@ public sealed class LecturerAdminService(
 
         await transaction.CommitAsync(cancellationToken);
         return LecturerAdminResult<string>.Success(number);
+    }
+
+    /// <summary>The lecturer's id, or null (the leave route drops their <c>lecturer-modules</c> entry after the commit).</summary>
+    public Task<Guid?> IdOfAsync(string staffNumber, CancellationToken cancellationToken = default)
+    {
+        var number = Normalise(staffNumber);
+        return db.Lecturers.AsNoTracking().Where(l => l.StaffNumber == number).Select(l => (Guid?)l.Id).SingleOrDefaultAsync(cancellationToken);
     }
 
     private static string Normalise(string staffNumber)

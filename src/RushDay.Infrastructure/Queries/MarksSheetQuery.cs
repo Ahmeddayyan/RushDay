@@ -22,14 +22,19 @@ public enum MarksState
 
 /// <summary>
 /// <c>MarksStatus</c> of one module for one academic year (02-api.md section 7): <c>total</c> active enrolments,
-/// <c>entered</c> of them with a grade row, and the status from those grades only (grades of withdrawn enrolments are
+/// <c>entered</c> of them with a grade row that belongs to the module's current stage (any grade while the module is in
+/// draft; only a Submitted or Published one once it has left draft, so a Draft that reappeared on a submitted module
+/// is <c>missing</c>, review S6 E1), and the status from those grades only (grades of withdrawn enrolments are
 /// ignored). <see cref="PublishedAt"/> is the instant of the live or scheduled publication.
 /// </summary>
 public sealed record MarksStatusData(MarksState Status, int Entered, int Missing, int Total, DateTimeOffset? SubmittedAt, DateTimeOffset? PublishedAt)
 {
     public static MarksStatusData NoStudents { get; } = new(MarksState.NoStudents, 0, 0, 0, null, null);
 
-    /// <summary>A module is publishable iff <c>status = 'submitted' AND missing = 0</c>.</summary>
+    /// <summary>
+    /// A module is publishable iff <c>status = 'submitted' AND missing = 0</c>: every active enrolment's grade is
+    /// Submitted, so a publish (which moves exactly the Submitted grades) leaves no active student's mark behind.
+    /// </summary>
     public bool IsPublishable => Status == MarksState.Submitted && Missing == 0;
 
     /// <summary>Lecturers may save marks only while nothing has been submitted.</summary>
@@ -109,7 +114,8 @@ public static class MarksStatusQuery
                (count(*) FILTER (WHERE g.status = 'Submitted'))::int,
                max(g.submitted_at),
                max(g.published_at) FILTER (WHERE g.status = 'Published' AND g.published_at <= @now),
-               min(g.published_at) FILTER (WHERE g.status = 'Published' AND g.published_at > @now)
+               min(g.published_at) FILTER (WHERE g.status = 'Published' AND g.published_at > @now),
+               (count(*) FILTER (WHERE g.status = 'Draft'))::int
         FROM enrolments e
         LEFT JOIN grades g ON g.student_id = e.student_id AND g.module_id = e.module_id
         WHERE e.status = 'Active' AND e.academic_year = @year
@@ -157,7 +163,8 @@ public static class MarksStatusQuery
                 r.GetInt32(5),
                 RawSql.NullableInstant(r, 6),
                 RawSql.NullableInstant(r, 7),
-                RawSql.NullableInstant(r, 8))),
+                RawSql.NullableInstant(r, 8),
+                r.GetInt32(9))),
             cancellationToken);
         return rows.ToDictionary(r => r.Id, r => r.Status);
     }
@@ -177,18 +184,24 @@ public static class MarksStatusQuery
     /// <summary>
     /// <c>published</c> if any grade is live, else <c>scheduled</c> if any is published in the future, else
     /// <c>submitted</c> if any is Submitted, else <c>draft</c> (grades exist or students are enrolled), else
-    /// <c>noStudents</c>.
+    /// <c>noStudents</c>. <paramref name="graded"/> counts active enrolments with any grade row, <paramref name="drafts"/>
+    /// those whose grade is still Draft: once the module has left draft a Draft is not part of the submission (a student
+    /// withdrawn before submit and enrolled again, or data from before review S6 E1), so it counts as missing and the
+    /// module is not publishable until it is returned to draft.
     /// </summary>
     public static MarksStatusData From(
         int total,
-        int entered,
+        int graded,
         int live,
         int scheduled,
         int submitted,
         DateTimeOffset? submittedAt,
         DateTimeOffset? liveAt,
-        DateTimeOffset? scheduledAt)
+        DateTimeOffset? scheduledAt,
+        int drafts = 0)
     {
+        var leftDraft = live > 0 || scheduled > 0 || submitted > 0;
+        var entered = leftDraft ? Math.Max(0, graded - drafts) : graded;
         var missing = Math.Max(0, total - entered);
         if (live > 0)
         {
@@ -319,9 +332,12 @@ public sealed class LecturerModulesQuery(RushDayDbContext db)
 {
     public async Task<IReadOnlyList<LecturerModuleData>> ExecuteAsync(Guid lecturerId, string academicYear, DateTimeOffset now, CancellationToken cancellationToken = default)
     {
-        var roles = await db.ModuleLecturers.AsNoTracking()
-            .Where(ml => ml.LecturerId == lecturerId)
-            .Select(ml => new { ml.ModuleId, ml.Role })
+        // A lecturer who has left keeps their assignments on record but lists nothing (review S6 E5).
+        var roles = await (
+            from ml in db.ModuleLecturers.AsNoTracking()
+            join l in db.Lecturers.AsNoTracking() on ml.LecturerId equals l.Id
+            where ml.LecturerId == lecturerId && l.LeftAt == null
+            select new { ml.ModuleId, ml.Role })
             .ToDictionaryAsync(ml => ml.ModuleId, ml => ml.Role, cancellationToken);
         if (roles.Count == 0)
         {

@@ -22,14 +22,17 @@ public sealed record EnrolmentWindowSnapshot(
     public bool AllowsWithdrawalAt(DateTimeOffset now) => now < WithdrawalDeadlineAt;
 }
 
-/// <summary><c>windows:all</c>, 60 s: every window of every year. Invalidated by the admin window routes (S6).</summary>
+/// <summary>
+/// <c>windows:all</c>, 60 s: every window of every year. Invalidated by the admin window routes and a settings year change
+/// (S6); the key is generation-versioned (joint item J5), so a fill in flight at a change cannot outlive it.
+/// </summary>
 public sealed class EnrolmentWindowCache(HybridCache cache, IDbContextFactory<RushDayDbContext> contexts, ICacheMetrics metrics)
 {
     public static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(60);
 
     public async ValueTask<IReadOnlyList<EnrolmentWindowSnapshot>> GetAllAsync(CancellationToken cancellationToken = default)
     {
-        var holder = await cache.GetOrCreateAsync(
+        var holder = await cache.GetOrCreateVersionedAsync(
             metrics,
             CacheKeys.Windows,
             CacheKeys.Windows,
@@ -60,7 +63,7 @@ public sealed class EnrolmentWindowCache(HybridCache cache, IDbContextFactory<Ru
     }
 
     public ValueTask InvalidateAsync(CancellationToken cancellationToken = default) =>
-        cache.RemoveAsync(CacheKeys.Windows, cancellationToken);
+        cache.InvalidateVersionedAsync(CacheKeys.Windows, cancellationToken);
 
     // Its own context: the fill may outlive the request that started it (04-performance-and-ops.md section 4).
     private async Task<EnrolmentWindowSnapshot[]> LoadAsync(CancellationToken cancellationToken)

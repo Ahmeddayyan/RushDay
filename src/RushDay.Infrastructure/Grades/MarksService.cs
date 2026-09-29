@@ -45,9 +45,13 @@ public sealed record MarksResult<T>(T? Value, MarksFailure? Failure)
 }
 
 /// <summary>
-/// Serialises the lecturer-side mutations of one module's marks (save, submit, return to draft): a PostgreSQL advisory
-/// lock held to the end of the transaction, keyed on the module, so a status check and the writes it guards are one
-/// step. It never touches the module row, so an enrolment rush on the same module is not slowed by marks entry.
+/// Serialises the mutations of one module's marks (save, submit, return to draft, publish): a PostgreSQL advisory lock
+/// held to the end of the transaction, keyed on the module, so a status check and the writes it guards are one step.
+/// An enrolment on the module takes the same lock <b>shared</b> (<see cref="AcquireSharedAsync"/>) around its
+/// "marks still in draft" check (review S6 E1), so a submit, return to draft or publish either finished before that
+/// check or waits for the enrolment to commit; enrolments do not wait for one another, so a rush is not serialised by
+/// it. It never touches the module row. A transaction takes at most one of these locks, except a publish, which takes
+/// its modules' locks in module-id order.
 /// </summary>
 public static class ModuleMarksLock
 {
@@ -59,6 +63,24 @@ public static class ModuleMarksLock
         ArgumentNullException.ThrowIfNull(db);
         var key = moduleId.ToString("D");
         return db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({LockClass}, hashtext({key}))", cancellationToken);
+    }
+
+    /// <summary>The shared form, for an enrolment's check: it conflicts only with <see cref="AcquireAsync"/>.</summary>
+    public static Task AcquireSharedAsync(RushDayDbContext db, Guid moduleId, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        var key = moduleId.ToString("D");
+        return db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock_shared({LockClass}, hashtext({key}))", cancellationToken);
+    }
+
+    /// <summary>Several modules' locks (a publish), always in module-id order so two publishes never wait for each other in a cycle.</summary>
+    public static async Task AcquireManyAsync(RushDayDbContext db, IEnumerable<Guid> moduleIds, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(moduleIds);
+        foreach (var moduleId in moduleIds.Distinct().Order())
+        {
+            await AcquireAsync(db, moduleId, cancellationToken);
+        }
     }
 }
 

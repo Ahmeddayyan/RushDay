@@ -43,6 +43,11 @@ public static class AdminStudentEndpoints
     private static async Task<IResult> ListAsync([AsParameters] StudentListParameters parameters, AdminStudentQuery query, TimeProvider clock, CancellationToken cancellationToken)
     {
         var page = PageRequest.Of(parameters.Page, parameters.PageSize, DefaultPageSize, MaxPageSize);
+        if (page.IsTooDeep)
+        {
+            return StaffPatterns.PageTooDeep();
+        }
+
         var rows = await query.ListAsync(parameters.Q, parameters.State(), page, clock.GetUtcNow(), cancellationToken);
         return TypedResults.Ok(new Paged<AdminStudentListItem>([.. rows.Items.Select(AdminStudentListItem.From)], rows.Page, rows.PageSize, rows.Total));
     }

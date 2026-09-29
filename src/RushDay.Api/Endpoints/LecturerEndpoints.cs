@@ -79,13 +79,19 @@ public static class LecturerEndpoints
         var now = s.Clock.GetUtcNow();
         var calendar = await s.Windows.CurrentAsync(cancellationToken);
         var page = PageRequest.Of(parameters.Page, parameters.PageSize, RosterPageSize, RosterMaxPageSize);
+        if (page.IsTooDeep)
+        {
+            return StaffPatterns.PageTooDeep();
+        }
+
         var rows = await query.ExecuteAsync(taught.Id, calendar.AcademicYear, s.User.LecturerId, parameters.Q, page, cancellationToken);
         var summary = await SummaryAsync(s, taught.Id, calendar.AcademicYear, now, cancellationToken);
         return TypedResults.Ok(RosterResponse.From(summary, rows));
     }
 
-    // GET /api/lecturer/modules/{code}/roster.csv (Should): the whole roster of the year as an attachment.
-    private static async Task<IResult> RosterCsvAsync(string code, [AsParameters] Staff s, RosterQuery query, HttpContext http, CancellationToken cancellationToken)
+    // GET /api/lecturer/modules/{code}/roster.csv (Should): the whole roster of the year as an attachment; a bulk read of
+    // personal data, so it is audited (roster.exported, committed before the response, review S6 E15).
+    private static async Task<IResult> RosterCsvAsync(string code, [AsParameters] Staff s, RosterQuery query, AuditWriter audit, HttpContext http, CancellationToken cancellationToken)
     {
         var taught = await TaughtAsync(s, code, cancellationToken);
         if (taught is null)
@@ -111,6 +117,15 @@ public static class LecturerEndpoints
             ]));
         }
 
+        audit.Record(
+            s.Db,
+            Domain.Audit.AuditActions.RosterExported,
+            Domain.Audit.AuditSubjects.Module,
+            taught.Code,
+            new { moduleCode = taught.Code, academicYear = calendar.AcademicYear, rowCount = rows.Count },
+            moduleId: taught.Id);
+        await s.Db.SaveChangesAsync(cancellationToken);
+
         // The stored, canonical code: never the route value, which matched case-insensitively.
         http.Response.Headers.ContentDisposition = $"attachment; filename=\"roster-{taught.Code}.csv\"";
         return TypedResults.Text(csv.ToString(), AuditCsvWriter.ContentType);
@@ -127,6 +142,11 @@ public static class LecturerEndpoints
 
         var calendar = await s.Windows.CurrentAsync(cancellationToken);
         var page = PageRequest.Of(parameters.Page, parameters.PageSize, MarksPageSize, MarksMaxPageSize);
+        if (page.IsTooDeep)
+        {
+            return StaffPatterns.PageTooDeep();
+        }
+
         var sheet = await query.ExecuteAsync(taught.Id, taught.Code, taught.Title, calendar.AcademicYear, s.User.LecturerId, taught.Role, parameters.Q, page, s.Clock.GetUtcNow(), cancellationToken);
         return TypedResults.Ok(MarksSheet.From(sheet));
     }
@@ -198,7 +218,7 @@ public static class LecturerEndpoints
             return NotYourModule();
         }
 
-        var created = await announcements.CreateAsync(request.ToDraft(), scope.Value, userId, cancellationToken);
+        var created = await announcements.CreateAsync(request.ToDraft(), scope, userId, cancellationToken);
         return TypedResults.Created((string?)null, AnnouncementView.From(created));
     }
 
@@ -211,7 +231,7 @@ public static class LecturerEndpoints
             return NotYourModule();
         }
 
-        var updated = await announcements.UpdateAsync(id, request.ToDraft(), scope.Value, cancellationToken);
+        var updated = await announcements.UpdateAsync(id, request.ToDraft(), scope, cancellationToken);
         return updated is null
             ? ProblemResults.Problem(ProblemTypes.AnnouncementNotFound, "No announcement of this module has that id.")
             : TypedResults.Ok(AnnouncementView.From(updated));
@@ -226,17 +246,18 @@ public static class LecturerEndpoints
             return NotYourModule();
         }
 
-        return await announcements.DeleteAsync(id, scope.Value, cancellationToken)
+        return await announcements.DeleteAsync(id, scope, cancellationToken)
             ? TypedResults.NoContent()
             : ProblemResults.Problem(ProblemTypes.AnnouncementNotFound, "No announcement of this module has that id.");
     }
 
     /// <summary>
-    /// The one place lecturer announcement calls get their scope: the id of the module the caller teaches, never null
-    /// (a null scope would mean "university" to create and "any scope" to update and delete).
+    /// The one place lecturer announcement calls get their scope: <see cref="AnnouncementWriteScope.Module"/> of the
+    /// module the caller teaches (resolved through <c>module_lecturers</c>), or null when they teach no such module. The
+    /// lecturer routes can never produce <see cref="AnnouncementWriteScope.Administrator"/> (joint item J3).
     /// </summary>
-    private static async Task<Guid?> ModuleScopeAsync(Staff s, string code, CancellationToken cancellationToken) =>
-        (await TaughtAsync(s, code, cancellationToken))?.Id;
+    private static async Task<AnnouncementWriteScope?> ModuleScopeAsync(Staff s, string code, CancellationToken cancellationToken) =>
+        await TaughtAsync(s, code, cancellationToken) is { } taught ? AnnouncementWriteScope.Module(taught.Id) : null;
 
     private static async Task<TaughtModule?> TaughtAsync(Staff s, string code, CancellationToken cancellationToken) =>
         s.User.LecturerId is { } lecturerId ? await StaffModules.TaughtAsync(s.Db, lecturerId, code, cancellationToken) : null;

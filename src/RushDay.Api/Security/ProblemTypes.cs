@@ -3,7 +3,7 @@ using System.Collections.Frozen;
 namespace RushDay.Api.Security;
 
 /// <summary>
-/// The closed slug catalogue of 02-api.md section 6 (D16): exactly these 62 slugs, each surfaced as
+/// The closed slug catalogue of 02-api.md section 6 (D16): exactly these 63 slugs, each surfaced as
 /// <c>type = "urn:rushday:&lt;slug&gt;"</c>. Adding one is a spec change; <c>ProblemTypesTests</c> asserts the set.
 /// </summary>
 public static class ProblemTypes
@@ -61,6 +61,7 @@ public static class ProblemTypes
     public const string PublicationScheduled = "publication-scheduled";
     public const string UsernameTaken = "username-taken";
     public const string PrincipalHasAccount = "principal-has-account";
+    public const string PrincipalLeft = "principal-left";
     public const string ModuleCodeTaken = "module-code-taken";
     public const string StudentNumberTaken = "student-number-taken";
     public const string StaffNumberTaken = "staff-number-taken";
@@ -103,7 +104,7 @@ public static class ProblemTypes
         [WithdrawalDeadlinePassed] = 409, [ResultsExist] = 409, [StudentLeft] = 409, [ModuleLocked] = 409,
         [ModuleNotSubmitted] = 409, [AlreadySubmitted] = 409, [NothingToSubmit] = 409, [StaleMark] = 409,
         [NothingToPublish] = 409, [PublicationLive] = 409, [PublicationScheduled] = 409, [UsernameTaken] = 409,
-        [PrincipalHasAccount] = 409, [ModuleCodeTaken] = 409, [StudentNumberTaken] = 409, [StaffNumberTaken] = 409,
+        [PrincipalHasAccount] = 409, [PrincipalLeft] = 409, [ModuleCodeTaken] = 409, [StudentNumberTaken] = 409, [StaffNumberTaken] = 409,
         [WindowExists] = 409, [DemoAccount] = 409, [MfaAlreadyEnabled] = 409,
         [PayloadTooLarge] = 413,
         [UnsupportedMediaType] = 415,

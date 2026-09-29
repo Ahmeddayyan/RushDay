@@ -19,8 +19,9 @@ public sealed record LoginRequest
 /// <summary><c>POST /api/auth/mfa/enable</c> and <c>POST /api/auth/mfa/verify</c>.</summary>
 public sealed record MfaCodeRequest
 {
+    /// <summary>Six ASCII digits: <c>\d</c> would also admit Arabic-Indic or full-width digits (joint item J4).</summary>
     [Required]
-    [RegularExpression(@"^\d{6}$")]
+    [RegularExpression("^[0-9]{6}$")]
     public string Code { get; init; } = string.Empty;
 }
 

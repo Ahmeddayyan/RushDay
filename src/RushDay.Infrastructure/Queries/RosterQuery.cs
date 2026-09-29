@@ -8,14 +8,22 @@ namespace RushDay.Infrastructure.Queries;
 
 /// <summary>
 /// A clamped page of a paged read (02-api.md section 1): <c>page</c> starts at 1 and <c>pageSize</c> is clamped to
-/// 1..<c>maxSize</c> (100 in general, 200 for rosters and the audit log, 500 for the marks sheet).
+/// 1..<c>maxSize</c> (100 in general, 200 for rosters and the audit log, 500 for the marks sheet). A page that would
+/// end beyond row <see cref="MaxRows"/> is refused (400 <c>validation</c>, review S6 E14): an OFFSET that deep costs
+/// a full scan per page, and the filters and the CSV exports are the way to reach older rows.
 /// </summary>
 public readonly record struct PageRequest(int Page, int PageSize)
 {
     /// <summary>Far beyond any real page; keeps <see cref="Skip"/> inside <see cref="int"/>.</summary>
     public const int MaxPage = 100_000;
 
+    /// <summary>The deepest row a page may reach: <c>page x pageSize</c> at most 10,000.</summary>
+    public const int MaxRows = 10_000;
+
     public int Skip => (Page - 1) * PageSize;
+
+    /// <summary>True when the page ends beyond <see cref="MaxRows"/> (the route answers 400 <c>validation</c>).</summary>
+    public bool IsTooDeep => (long)Page * PageSize > MaxRows;
 
     public static PageRequest Of(int? page, int? pageSize, int defaultSize, int maxSize) =>
         new(Math.Clamp(page ?? 1, 1, MaxPage), Math.Clamp(pageSize ?? defaultSize, 1, maxSize));
@@ -62,7 +70,8 @@ public static class StaffModules
     /// <summary>
     /// The module of <paramref name="code"/> resolved <b>through</b> <c>module_lecturers</c> (<c>WHERE ml.lecturer_id =
     /// @me AND m.code = @code</c>, 02-api.md section 4): null for a module the lecturer does not teach, so a policy bug
-    /// yields "not found", never another module's data.
+    /// yields "not found", never another module's data. A lecturer who has left (<c>lecturers.left_at</c> set) teaches
+    /// nothing: their assignments stay for the record but carry no authority (review S6 E5).
     /// </summary>
     public static Task<TaughtModule?> TaughtAsync(RushDayDbContext db, Guid lecturerId, string code, CancellationToken cancellationToken = default)
     {
@@ -71,8 +80,9 @@ public static class StaffModules
         var normalised = NormaliseCode(code);
 
         return (from ml in db.ModuleLecturers.AsNoTracking()
+                join l in db.Lecturers.AsNoTracking() on ml.LecturerId equals l.Id
                 join m in db.Modules.AsNoTracking() on ml.ModuleId equals m.Id
-                where ml.LecturerId == lecturerId && m.Code == normalised
+                where ml.LecturerId == lecturerId && l.LeftAt == null && m.Code == normalised
                 select new TaughtModule(m.Id, m.Code, m.Title, ml.Role))
             .SingleOrDefaultAsync(cancellationToken);
     }

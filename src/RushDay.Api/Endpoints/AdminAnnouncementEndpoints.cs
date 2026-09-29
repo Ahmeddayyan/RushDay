@@ -27,8 +27,8 @@ public static class AdminAnnouncementEndpoints
     private static async Task<IResult> ListAsync(AnnouncementService announcements, CancellationToken cancellationToken) =>
         TypedResults.Ok(AnnouncementView.From(await announcements.ListAllAsync(cancellationToken)));
 
-    // The administrator's calls to the service: moduleId null creates a university announcement, moduleScope null
-    // resolves any scope (administrators only; the lecturer routes always pass their module).
+    // The administrator's calls to the service, all with AnnouncementWriteScope.Administrator: a new announcement is
+    // university-wide, and an edit or delete reaches any scope (the lecturer routes always pass their module).
     private static async Task<IResult> CreateAsync(AnnouncementRequest request, CurrentUser user, AnnouncementService announcements, CancellationToken cancellationToken)
     {
         if (user.UserId is not { } userId)
@@ -36,20 +36,20 @@ public static class AdminAnnouncementEndpoints
             return ProblemResults.Problem(ProblemTypes.Forbidden);
         }
 
-        var created = await announcements.CreateAsync(request.ToDraft(), moduleId: null, userId, cancellationToken);
+        var created = await announcements.CreateAsync(request.ToDraft(), AnnouncementWriteScope.Administrator, userId, cancellationToken);
         return TypedResults.Created((string?)null, AnnouncementView.From(created));
     }
 
     private static async Task<IResult> UpdateAsync(Guid id, AnnouncementRequest request, AnnouncementService announcements, CancellationToken cancellationToken)
     {
-        var updated = await announcements.UpdateAsync(id, request.ToDraft(), moduleScope: null, cancellationToken);
+        var updated = await announcements.UpdateAsync(id, request.ToDraft(), AnnouncementWriteScope.Administrator, cancellationToken);
         return updated is null
             ? ProblemResults.Problem(ProblemTypes.AnnouncementNotFound, "No announcement has that id.")
             : TypedResults.Ok(AnnouncementView.From(updated));
     }
 
     private static async Task<IResult> DeleteAsync(Guid id, AnnouncementService announcements, CancellationToken cancellationToken) =>
-        await announcements.DeleteAsync(id, moduleScope: null, cancellationToken)
+        await announcements.DeleteAsync(id, AnnouncementWriteScope.Administrator, cancellationToken)
             ? TypedResults.NoContent()
             : ProblemResults.Problem(ProblemTypes.AnnouncementNotFound, "No announcement has that id.");
 }

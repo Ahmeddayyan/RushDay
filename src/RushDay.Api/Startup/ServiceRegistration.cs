@@ -161,7 +161,8 @@ public static partial class ServiceRegistration
             json.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
             json.MaxDepth = 16;
             json.UnmappedMemberHandling = JsonUnmappedMemberHandling.Skip;
-            json.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+            // Names only: "outcome": 1 or "semester": "1" is 400 validation, never a silently chosen member (review S6 E13).
+            json.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false));
             json.Converters.Add(new UtcDateTimeOffsetJsonConverter());
         });
     }

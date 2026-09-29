@@ -105,6 +105,9 @@ public static class EnrolmentProblems
                 }),
             EnrolmentError.ResultsExist => ProblemResults.Problem(ProblemTypes.ResultsExist, "A mark is already recorded for this module."),
             EnrolmentError.StudentLeft => ProblemResults.Problem(ProblemTypes.StudentLeft, "The student has left the university."),
+            EnrolmentError.ModuleLocked => ProblemResults.Problem(
+                ProblemTypes.ModuleLocked,
+                "Marks for this module have already been submitted this year, so nobody can join it until the academic office returns them to draft."),
             EnrolmentError.NotEnrolled => ProblemResults.Problem(ProblemTypes.NotEnrolled, "There is no active enrolment on this module."),
             EnrolmentError.WithdrawalDeadlinePassed => ProblemResults.Problem(
                 ProblemTypes.WithdrawalDeadlinePassed,

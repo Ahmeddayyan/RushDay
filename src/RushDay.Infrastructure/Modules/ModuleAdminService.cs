@@ -51,9 +51,12 @@ public sealed record AdminModuleData(CatalogueModule Module, MarksStatusData Mar
 /// The registry's module administration (02-api.md section 8.5): the list (inactive modules on request) with this
 /// year's marks status, create, update with the capacity rule (only a request that <b>lowers</b> capacity below
 /// <c>enrolled_count</c> is refused; an unchanged capacity is accepted even on an oversold module) and the semester
-/// rule (not while students hold places), lecturer assignment (exactly one leader, no duplicates, nobody who has
-/// left), and trim to capacity. Every mutation audits in its transaction; the caller invalidates <c>catalogue:all</c>
-/// and, for assignments, the affected lecturers' <c>lecturer-modules</c> entries.
+/// rule (never once the module has had an enrolment or a grade in any year: it would move students' credits,
+/// timetables and published results between semesters, review S6 E7), lecturer assignment (exactly one leader, no
+/// duplicates, nobody who has left; serialised on the module row and backed by a unique index, E10), and trim to
+/// capacity (counted from the real enrolments under lock and withdrawn through
+/// <see cref="EnrolmentService.WithdrawManyAsync"/>, E4 and J1). Every mutation audits in its transaction; the caller
+/// invalidates <c>catalogue:all</c> and, for assignments, the affected lecturers' <c>lecturer-modules</c> entries.
 /// </summary>
 public sealed class ModuleAdminService(
     RushDayDbContext db,
@@ -62,6 +65,14 @@ public sealed class ModuleAdminService(
     AuditWriter audit,
     TimeProvider clock)
 {
+    /// <summary>Every student holding one of the year's places on the module, locked in id order (the enrolment lock order).</summary>
+    private const string LockModuleStudentsSql = """
+        SELECT s.id FROM students s
+        WHERE s.id IN (SELECT e.student_id FROM enrolments e WHERE e.module_id = @module AND e.status = 'Active' AND e.academic_year = @year)
+        ORDER BY s.id
+        FOR NO KEY UPDATE
+        """;
+
     public async Task<IReadOnlyList<AdminModuleData>> ListAsync(bool includeInactive, string academicYear, DateTimeOffset now, CancellationToken cancellationToken = default)
     {
         var modules = db.Modules.AsNoTracking();
@@ -122,7 +133,8 @@ public sealed class ModuleAdminService(
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
-        // The row lock makes enrolled_count exact for the two rules: an enrolment claiming a place waits for us.
+        // FOR UPDATE, not NO KEY UPDATE: it also holds off the foreign-key check (FOR KEY SHARE) of any enrolment insert,
+        // so neither rule below can be overtaken by a new enrolment row before this commits.
         var rows = await db.Modules.FromSql($"SELECT * FROM modules WHERE code = {normalised} FOR UPDATE").ToListAsync(cancellationToken);
         var module = rows.SingleOrDefault();
         if (module is null)
@@ -135,9 +147,15 @@ public sealed class ModuleAdminService(
             return ModuleAdminResult<string>.Fail(ModuleAdminError.CapacityBelowEnrolled, module.EnrolledCount);
         }
 
-        if (change.Semester != module.Semester && module.EnrolledCount > 0)
+        if (change.Semester != module.Semester)
         {
-            return ModuleAdminResult<string>.Fail(ModuleAdminError.SemesterChangeWithEnrolments, module.EnrolledCount);
+            // Any enrolment of any year (active or withdrawn) or any grade pins the semester: results are grouped by
+            // (enrolment year, module semester), so moving it would move earlier years' published marks (review S6 E7).
+            var ever = await db.Enrolments.CountAsync(e => e.ModuleId == module.Id, cancellationToken);
+            if (ever > 0 || await db.Grades.AnyAsync(g => g.ModuleId == module.Id, cancellationToken))
+            {
+                return ModuleAdminResult<string>.Fail(ModuleAdminError.SemesterChangeWithEnrolments, ever);
+            }
         }
 
         var before = Snapshot(module);
@@ -156,7 +174,12 @@ public sealed class ModuleAdminService(
         return ModuleAdminResult<string>.Success(module.Code);
     }
 
-    /// <summary>Replaces the module's assignments; <c>role</c> changes keep the original <c>assigned_at</c>.</summary>
+    /// <summary>
+    /// Replaces the module's assignments; <c>role</c> changes keep the original <c>assigned_at</c>. The module row is
+    /// locked first (<c>FOR NO KEY UPDATE</c>), so two assignments of one module run one after the other and the second
+    /// reads what the first committed (review S6 E10: both used to read the old set and leave two leaders). Rows that
+    /// stop being leader are saved before the new leader is, so the unique index on the leader never sees two.
+    /// </summary>
     public async Task<ModuleAdminResult<LecturersSet>> SetLecturersAsync(string code, IReadOnlyList<LecturerAssignment> assignments, Guid actorUserId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(assignments);
@@ -186,6 +209,8 @@ public sealed class ModuleAdminService(
         }
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlAsync($"SELECT id FROM modules WHERE id = {found.Id} FOR NO KEY UPDATE", cancellationToken);
+
         var current = await db.ModuleLecturers.Where(ml => ml.ModuleId == found.Id).ToListAsync(cancellationToken);
         var staffById = await db.Lecturers.AsNoTracking()
             .Where(l => current.Select(c => c.LecturerId).Contains(l.Id))
@@ -194,16 +219,26 @@ public sealed class ModuleAdminService(
 
         var now = clock.GetUtcNow();
         var wanted = requested.ToDictionary(a => lecturers[a.StaffNumber].Id, a => a.Role);
+
+        // 1. Removals and demotions first.
         foreach (var existing in current)
         {
             if (!wanted.TryGetValue(existing.LecturerId, out var role))
             {
                 db.ModuleLecturers.Remove(existing);
             }
-            else if (existing.Role != role)
+            else if (existing.Role != role && role == ModuleLecturerRole.Teacher)
             {
                 existing.Role = role;
             }
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        // 2. Then promotions and additions.
+        foreach (var existing in current.Where(c => wanted.TryGetValue(c.LecturerId, out var role) && c.Role != role))
+        {
+            existing.Role = wanted[existing.LecturerId];
         }
 
         foreach (var (lecturerId, role) in wanted)
@@ -231,8 +266,14 @@ public sealed class ModuleAdminService(
     }
 
     /// <summary>
-    /// Withdraws this year's active enrolments, latest <c>enrolled_at</c> first, until <c>enrolled_count</c> equals
-    /// capacity (<see cref="WithdrawForTrimAsync"/>, inside this transaction), then audits <c>module.trimmed</c>.
+    /// Trims an over-capacity module back to capacity (02-api.md section 8.5; review S6 E4, joint item J1). Every student
+    /// holding one of this year's places is locked first (id order, the enrolment lock order), so no withdrawal can
+    /// change the count meanwhile; the excess is <b>the real number of active enrolments</b> of the year minus capacity,
+    /// never the stored <c>enrolled_count</c> (a drifted counter must not withdraw anyone from a module that is not
+    /// over capacity); the latest <c>enrolled_at</c> go first, withdrawn by one
+    /// <see cref="EnrolmentService.WithdrawManyAsync"/> call (each audited <c>enrolment.admin_withdrawn</c> with
+    /// <c>trim: true</c>); then, with the module row locked last, <c>enrolled_count</c> is set to the real count, which
+    /// also repairs a drifted counter. <c>before</c> and <c>after</c> are the stored count before and after.
     /// </summary>
     public async Task<ModuleAdminResult<TrimOutcome>> TrimAsync(string code, string reason, Guid actorUserId, CancellationToken cancellationToken = default)
     {
@@ -242,57 +283,67 @@ public sealed class ModuleAdminService(
             return ModuleAdminResult<TrimOutcome>.Fail(ModuleAdminError.ModuleNotFound);
         }
 
-        var calendar = await windows.CurrentAsync(cancellationToken);
-        var year = calendar.AcademicYear;
+        var cachedYear = (await windows.CurrentAsync(cancellationToken)).AcademicYear;
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var start = await CountsAsync(found.Id, cancellationToken);
-        var excess = Math.Max(0, start.EnrolledCount - start.Capacity);
+
+        // 1. Students, then the year under a share lock: the order of an enrolment or a withdrawal.
+        await LockStudentsAsync(found.Id, cachedYear, cancellationToken);
+        var years = await db.Database.SqlQueryRaw<string>(EnrolmentService.LockAcademicYearSql).ToListAsync(cancellationToken);
+        var year = years.Count == 0 ? cachedYear : years[0];
+        if (!string.Equals(year, cachedYear, StringComparison.Ordinal))
+        {
+            await LockStudentsAsync(found.Id, year, cancellationToken);
+        }
+
+        // 2. The real count, and the latest enrolments beyond capacity.
+        var active = ActiveEnrolments(found.Id, year);
+        var excess = Math.Max(0, await active.CountAsync(cancellationToken) - start.Capacity);
         var latest = await (
-            from e in db.Enrolments.AsNoTracking()
+            from e in active
             join s in db.Students.AsNoTracking() on e.StudentId equals s.Id
-            where e.ModuleId == found.Id && e.Status == EnrolmentStatus.Active && e.AcademicYear == year
             orderby e.EnrolledAt descending, s.StudentNumber descending
-            select new TrimCandidate(e.StudentId, s.StudentNumber))
+            select new { e.StudentId, s.StudentNumber })
             .Take(excess)
             .ToListAsync(cancellationToken);
 
-        var withdrawn = await WithdrawForTrimAsync(found.Code, latest, reason, actorUserId, cancellationToken);
+        // 3. One bulk withdrawal (it locks each module row last, in id order).
+        var result = await enrolments.WithdrawManyAsync(
+            [.. latest.Select(c => new WithdrawalTarget(c.StudentId, found.Id))],
+            actorUserId,
+            new WithdrawOptions(Override: true, Reason: reason, Trim: true),
+            cancellationToken);
+        var withdrawnIds = result.Withdrawn.Select(r => r.EnrolmentId).ToHashSet();
+        var withdrawnStudents = await db.Enrolments.AsNoTracking()
+            .Where(e => withdrawnIds.Contains(e.Id))
+            .Select(e => e.StudentId)
+            .ToListAsync(cancellationToken);
+        var withdrawn = latest.Where(c => withdrawnStudents.Contains(c.StudentId)).Select(c => c.StudentNumber).ToList();
+
+        // 4. The module row (already held when anything was withdrawn), and the stored count set to the real one.
+        await db.Database.ExecuteSqlAsync($"SELECT id FROM modules WHERE id = {found.Id} FOR NO KEY UPDATE", cancellationToken);
+        var real = await ActiveEnrolments(found.Id, year).CountAsync(cancellationToken);
+        await db.Database.ExecuteSqlAsync(
+            $"UPDATE modules SET enrolled_count = {real}, updated_at = {clock.GetUtcNow()} WHERE id = {found.Id} AND enrolled_count <> {real}",
+            cancellationToken);
         var end = await CountsAsync(found.Id, cancellationToken);
 
-        audit.Record(db, AuditActions.ModuleTrimmed, AuditSubjects.Module, found.Code, new { reason, withdrawn }, moduleId: found.Id);
+        audit.Record(db, AuditActions.ModuleTrimmed, AuditSubjects.Module, found.Code, new { reason, withdrawn, enrolledCount = new { before = start.EnrolledCount, after = end.EnrolledCount } }, moduleId: found.Id);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
         return ModuleAdminResult<TrimOutcome>.Success(new TrimOutcome(found.Code, end.Capacity, start.EnrolledCount, end.EnrolledCount, withdrawn));
     }
 
-    /// <summary>
-    /// The one place trim withdraws enrolments (an administrator's override withdrawal per row, each audited
-    /// <c>enrolment.admin_withdrawn</c> with <c>trim: true</c>), inside the caller's transaction; returns the student
-    /// numbers withdrawn, in the order given.
-    /// </summary>
-    private async Task<IReadOnlyList<string>> WithdrawForTrimAsync(string moduleCode, IReadOnlyList<TrimCandidate> candidates, string reason, Guid actorUserId, CancellationToken cancellationToken)
-    {
-        var withdrawn = new List<string>(candidates.Count);
-        foreach (var candidate in candidates)
-        {
-            var result = await enrolments.WithdrawAsync(
-                candidate.StudentId,
-                moduleCode,
-                actorUserId,
-                new WithdrawOptions(Override: true, Reason: reason, Trim: true),
-                cancellationToken);
-            if (result.Succeeded)
-            {
-                withdrawn.Add(candidate.StudentNumber);
-            }
-        }
+    private IQueryable<Enrolment> ActiveEnrolments(Guid moduleId, string academicYear) =>
+        db.Enrolments.AsNoTracking().Where(e => e.ModuleId == moduleId && e.Status == EnrolmentStatus.Active && e.AcademicYear == academicYear);
 
-        return withdrawn;
-    }
-
-    private sealed record TrimCandidate(Guid StudentId, string StudentNumber);
+    private Task LockStudentsAsync(Guid moduleId, string academicYear, CancellationToken cancellationToken) =>
+        db.Database.ExecuteSqlRawAsync(
+            LockModuleStudentsSql,
+            [new NpgsqlParameter("module", moduleId), new NpgsqlParameter("year", academicYear)],
+            cancellationToken);
 
     private async Task<(int Capacity, int EnrolledCount)> CountsAsync(Guid moduleId, CancellationToken cancellationToken)
     {

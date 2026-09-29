@@ -3,9 +3,11 @@ using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using RushDay.Domain.Audit;
 using RushDay.Domain.Enrolments;
+using RushDay.Domain.Grades;
 using RushDay.Domain.Students;
 using RushDay.Infrastructure.Audit;
 using RushDay.Infrastructure.Enrolments;
+using RushDay.Infrastructure.Grades;
 using RushDay.Infrastructure.Identity;
 using RushDay.Infrastructure.Persistence;
 
@@ -37,11 +39,14 @@ public sealed record StudentAdminResult<T>(T? Value, StudentAdminError Error)
 
 /// <summary>
 /// The registry's student records (02-api.md section 8.5): create, edit (the linked login's <c>display_name</c>
-/// follows the name in the same transaction) and mark as left. Leaving withdraws every active enrolment of the current
-/// year through <see cref="EnrolmentService.WithdrawAsync"/> (each with its own <c>enrolment.admin_withdrawn</c> row,
-/// <c>left: true</c>), disables the linked account (<c>account.disabled</c>, security stamp rotated so its sessions
-/// end) and audits <c>student.left</c>, all in one transaction. A demo account is read-only and a demo actor may not
-/// disable a real one (02-api.md section 8.5), so a leave that would do either is refused as <c>demo-account</c>.
+/// follows the name in the same transaction) and mark as left. Leaving withdraws the current year's active enrolments
+/// that hold no submitted or published mark (review S6 E8: a mark already in the exam board's hands stays visible to
+/// the student, in the export and to the registry) through <see cref="EnrolmentService.WithdrawManyAsync"/>, once
+/// (joint item J1; each row audited <c>enrolment.admin_withdrawn</c> with <c>left: true</c>), disables the linked
+/// account (<c>account.disabled</c>, security stamp rotated so its sessions end) and audits <c>student.left</c>, all
+/// in one transaction. A demo account is read-only and a demo actor may not change a real one (02-api.md section 8.5),
+/// so a leave that would disable either, or an edit by a demo actor that would rename a real account's login (E6), is
+/// refused as <c>demo-account</c>; a demo account's display name does follow its record.
 /// </summary>
 public sealed class StudentAdminService(
     RushDayDbContext db,
@@ -102,6 +107,13 @@ public sealed class StudentAdminService(
             return StudentAdminResult<string>.Fail(StudentAdminError.StudentNotFound);
         }
 
+        // The rule of leave: a demo actor (public password) may not change a real account, and this edit renames the
+        // linked login (review S6 E6).
+        if (actor.ActorIsDemo && await db.Users.AsNoTracking().AnyAsync(u => u.StudentId == student.Id && !u.IsDemo, cancellationToken))
+        {
+            return StudentAdminResult<string>.Fail(StudentAdminError.DemoAccount);
+        }
+
         var before = Snapshot(student);
         student.FullName = change.FullName;
         student.Programme = change.Programme;
@@ -130,8 +142,9 @@ public sealed class StudentAdminService(
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
-        // The student row first (the enrolment lock order), so a concurrent self-enrolment waits for the leave.
-        var locked = await db.Students.FromSql($"SELECT * FROM students WHERE student_number = {number} FOR UPDATE").ToListAsync(cancellationToken);
+        // The student row first (the enrolment lock order, FOR NO KEY UPDATE as an enrolment takes it), so a concurrent
+        // self-enrolment or withdrawal waits for the leave.
+        var locked = await db.Students.FromSql($"SELECT * FROM students WHERE student_number = {number} FOR NO KEY UPDATE").ToListAsync(cancellationToken);
         var student = locked.SingleOrDefault();
         if (student is null)
         {
@@ -176,31 +189,32 @@ public sealed class StudentAdminService(
     }
 
     /// <summary>
-    /// The one place a leave withdraws enrolments: every active enrolment of <paramref name="academicYear"/>, each an
-    /// administrator's override withdrawal audited <c>enrolment.admin_withdrawn</c> with <c>left: true</c>, inside the
-    /// caller's transaction, in module-code order. Returns how many were withdrawn.
+    /// The one place a leave withdraws enrolments: the active enrolments of <paramref name="academicYear"/> whose module
+    /// holds no Submitted or Published grade of the student (review S6 E8), withdrawn by one
+    /// <see cref="EnrolmentService.WithdrawManyAsync"/> call inside the caller's transaction (joint item J1), each an
+    /// administrator's override withdrawal audited <c>enrolment.admin_withdrawn</c> with <c>left: true</c>. The shared
+    /// marks lock of each of those modules is taken first (module-id order), so a submit cannot turn a draft into a
+    /// submitted mark between this check and the withdrawal. Returns how many were withdrawn.
     /// </summary>
     private async Task<int> WithdrawForLeaveAsync(Guid studentId, string academicYear, string reason, Guid actorUserId, CancellationToken cancellationToken)
     {
-        var codes = await (
-            from e in db.Enrolments.AsNoTracking()
-            join m in db.Modules.AsNoTracking() on e.ModuleId equals m.Id
-            where e.StudentId == studentId && e.Status == EnrolmentStatus.Active && e.AcademicYear == academicYear
-            orderby m.Code
-            select m.Code)
+        var moduleIds = await db.Enrolments.AsNoTracking()
+            .Where(e => e.StudentId == studentId && e.Status == EnrolmentStatus.Active && e.AcademicYear == academicYear)
+            .Select(e => e.ModuleId)
             .ToListAsync(cancellationToken);
-
-        var withdrawn = 0;
-        foreach (var code in codes)
+        foreach (var moduleId in moduleIds.Order())
         {
-            var result = await enrolments.WithdrawAsync(studentId, code, actorUserId, new WithdrawOptions(Override: true, Reason: reason, Left: true), cancellationToken);
-            if (result.Succeeded)
-            {
-                withdrawn++;
-            }
+            await ModuleMarksLock.AcquireSharedAsync(db, moduleId, cancellationToken);
         }
 
-        return withdrawn;
+        var targets = await db.Enrolments.AsNoTracking()
+            .Where(e => e.StudentId == studentId && e.Status == EnrolmentStatus.Active && e.AcademicYear == academicYear
+                && !db.Grades.Any(g => g.StudentId == e.StudentId && g.ModuleId == e.ModuleId && g.Status != GradeStatus.Draft))
+            .Select(e => new WithdrawalTarget(e.StudentId, e.ModuleId))
+            .ToListAsync(cancellationToken);
+
+        var result = await enrolments.WithdrawManyAsync(targets, actorUserId, new WithdrawOptions(Override: true, Reason: reason, Left: true), cancellationToken);
+        return result.Withdrawn.Count;
     }
 
     private static object Snapshot(Student s) => new

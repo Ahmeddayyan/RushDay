@@ -18,7 +18,7 @@ public sealed partial class ProblemTypesTests(RushDayApiFactory factory)
         [403] = ["forbidden", "not-your-module", "not-module-leader", "password-change-required", "mfa-setup-required"],
         [404] = ["not-found", "module-not-found", "student-not-found", "lecturer-not-found", "account-not-found", "window-not-found", "publication-not-found", "announcement-not-found", "grade-not-found", "not-enrolled"],
         [405] = ["method-not-allowed"],
-        [409] = ["already-enrolled", "module-full", "module-inactive", "enrolment-window-closed", "withdrawal-deadline-passed", "results-exist", "student-left", "module-locked", "module-not-submitted", "already-submitted", "nothing-to-submit", "stale-mark", "nothing-to-publish", "publication-live", "publication-scheduled", "username-taken", "principal-has-account", "module-code-taken", "student-number-taken", "staff-number-taken", "window-exists", "demo-account", "mfa-already-enabled"],
+        [409] = ["already-enrolled", "module-full", "module-inactive", "enrolment-window-closed", "withdrawal-deadline-passed", "results-exist", "student-left", "module-locked", "module-not-submitted", "already-submitted", "nothing-to-submit", "stale-mark", "nothing-to-publish", "publication-live", "publication-scheduled", "username-taken", "principal-has-account", "principal-left", "module-code-taken", "student-number-taken", "staff-number-taken", "window-exists", "demo-account", "mfa-already-enabled"],
         [413] = ["payload-too-large"],
         [415] = ["unsupported-media-type"],
         [422] = ["credit-limit-exceeded", "marks-incomplete", "not-enrolled-students", "capacity-below-enrolled", "semester-change-with-enrolments", "publish-too-far-ahead", "invalid-lecturer-assignment", "window-dates-invalid", "self-lockout", "role-principal-mismatch"],
@@ -32,7 +32,7 @@ public sealed partial class ProblemTypesTests(RushDayApiFactory factory)
     {
         var expected = SpecTable.SelectMany(row => row.Value.Select(slug => (slug, row.Key))).ToDictionary(p => p.slug, p => p.Key);
 
-        Assert.Equal(62, expected.Count);
+        Assert.Equal(63, expected.Count);
         Assert.Equal(expected.Keys.Order(StringComparer.Ordinal), ProblemTypes.All.Order(StringComparer.Ordinal));
         foreach (var (slug, status) in expected)
         {
@@ -63,7 +63,7 @@ public sealed partial class ProblemTypesTests(RushDayApiFactory factory)
             }
         }
 
-        Assert.Equal(62, slugs.Count);
+        Assert.Equal(63, slugs.Count);
         Assert.Equal(slugs.Order(StringComparer.Ordinal), ProblemTypes.All.Order(StringComparer.Ordinal));
     }
 

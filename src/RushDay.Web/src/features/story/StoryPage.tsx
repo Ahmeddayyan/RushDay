@@ -84,22 +84,24 @@ export function Component() {
         </div>
       </Card>
 
-      <LoadingRegion label="load-test results">
-        {results.isPending && (
+      {/* Busy only while loading: a region left aria-busy would keep announcing "Loading" and hide
+          the machine banner from assistive technology after the results arrive. */}
+      {results.isPending && (
+        <LoadingRegion label="load-test results">
           <div className="space-y-4">
             <Skeleton className="h-16 w-full" />
             <Skeleton className="h-64 w-full" />
           </div>
-        )}
-        {results.isError && (
-          <Card>
-            <p className="text-sm text-danger">
-              Couldn&apos;t load the measured results right now. Reload the page to try again.
-            </p>
-          </Card>
-        )}
-        {results.machine && <MachineBanner machine={results.machine} />}
-      </LoadingRegion>
+        </LoadingRegion>
+      )}
+      {results.isError && (
+        <Card>
+          <p className="text-sm text-danger">
+            Couldn&apos;t load the measured results right now. Reload the page to try again.
+          </p>
+        </Card>
+      )}
+      {results.machine && <MachineBanner machine={results.machine} />}
 
       {!results.isPending && !results.isError && (
         <div className="space-y-6">

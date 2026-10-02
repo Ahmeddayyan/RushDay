@@ -166,6 +166,13 @@ unset has effectively granted `rushday_app` DDL for the migration to succeed, or
 owner before each deploy. The recommended, and the public demo's, configuration sets `ConnectionStrings:Migrations`
 to the owner role specifically so `rushday_app` never needs DDL rights at all.
 
+**Rehearsed (2 October 2026):** v1 was run locally exactly this way before the first production deploy: a clone of
+the v0 database, a `rushday_app` role with only the grants above, `ConnectionStrings__Migrations` on the owner,
+Production environment with the KEK set and demo mode on. Migrations, all backfills (demo on and demo off), the
+encrypted key-ring write and the full Playwright suite ran with no `42501` from the API or in the PostgreSQL log;
+`TRUNCATE audit_events` and `CREATE TABLE` were refused to `rushday_app`. Details in
+`docs/load-results/2026-10-02-v1-hardened.md`.
+
 ## 7. The Data Protection key-encryption key (`DataProtection:KeyEncryptionKey`)
 
 ASP.NET Core's Data Protection key ring (which backs both the session cookie and the antiforgery token) is stored in

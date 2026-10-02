@@ -75,4 +75,4 @@ optional `hotfix/v0-writes` branch of `06-implementation-plan.md` stage S0 that 
 unauthenticated writes once this was understood).
 
 **v1 evidence (stage S13):** `load/results/login-storm-guard-*.json`, `load/results/login-storm-spray-*.json` —
-not yet recorded; filled in by `docs/load-results/2026-10-xx-v1-hardened.md`.
+recorded in [`docs/load-results/2026-10-02-v1-hardened.md`](../load-results/2026-10-02-v1-hardened.md) run 4: guard mode 3,146 logins accepted and 3 asked to wait at up to 40/s, login p95 536 ms; spray mode 429 from the 21st failure from one address while the genuine student signed in from a second address.

@@ -62,5 +62,5 @@ raw summary `load/results/results-day-20260927-201336.json`.
 **v1 evidence (stage S13):** `load/k6/results-day.js` at 800 requests/second — target: `http_req_failed{endpoint:dashboard}`
 < 1%, p95 < 500 ms, and `rushday.dashboard.queries = 5` read from `/api/admin/ops/metrics` (down from v0's ~15); the
 injected-latency experiment against `v0-naive` and v1 (`04-performance-and-ops.md` section 9 step 6, Should) if time
-allows. Not yet recorded; filled in by `docs/load-results/2026-10-xx-v1-hardened.md` and
-`load/results/results-day-*.json`.
+allows. Recorded in [`docs/load-results/2026-10-02-v1-hardened.md`](../load-results/2026-10-02-v1-hardened.md) run 2 and `load/results/results-day-20261002-201224.json`: 0% failed, p95
+5.14 ms, p99 8.47 ms, `queriesPerRequest = 5`, peak working set 186 MiB; the injected-latency experiment was not run.

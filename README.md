@@ -184,16 +184,23 @@ Full write-up: [docs/load-results/2026-09-27-v0-baseline.md](docs/load-results/2
   requests/second, where p95 latency jumped from 6.5 ms to 2.5 seconds, and a hard throughput ceiling of roughly
   700-900 requests/second that offering more load made *worse*, not better.
 
-### v1 (not yet measured)
+### v1 hardened (2 October 2026)
 
-v1's fixes are built and tested (the acceptance checklist in
-[`docs/spec/00-overview.md`](docs/spec/00-overview.md) section 8 tracks each one against an integration test), but
-the before/after load numbers this section will quote once the release evidence run follows the procedure in
-`docs/spec/04-performance-and-ops.md` section 9 are **not yet recorded**. Expect, and do not yet cite as fact:
-zero oversold places on the enrolment rush, `rushday.dashboard.queries = 5` (down from v0's ~15), 503s with
-`Retry-After` replacing multi-second failures beyond the knee, and the login endpoint's own throughput under its
-concurrency guard. The dated write-up will land at `docs/load-results/2026-10-xx-v1-hardened.md`, linked from every
-ADR above.
+Full write-up: [docs/load-results/2026-10-02-v1-hardened.md](docs/load-results/2026-10-02-v1-hardened.md). Same laptop,
+same data (a clone of the v0 database, upgraded by v1 on start), the API on the least-privilege database role.
+
+- **Enrolment rush**: 30 accepted, **0 oversold**, the other 470 told the module is full, 0 errors, 0 TCP refusals,
+  in two runs on fresh clones (v0: 154 accepted, 124 oversold, 69% failed). The 409s took about 0.5 s at p95 on the
+  shared laptop.
+- **Results day** at 800 requests/second: 0% failed, p95 5.1 ms (v0 6.5 ms), and **5 database commands per
+  dashboard** instead of about 15.
+- **Beyond the knee**: at 1,000/s every request was served with p95 464 ms (v0 2.5 s); at 2,000/s about 1,000/s
+  were served and the excess got a 503 within milliseconds, nothing slower than 1.7 s (v0 p95 7.3 s); zero Postgres
+  `53300` at any rate. At 3,000-4,000/s this laptop does not hold up: served throughput fell to a few hundred per
+  second and admitted requests waited 6-15 s. The write-up says why and what was not measured.
+- **Login storm**: with the production-strength PBKDF2 guard, 3,146 sign-ins at up to 40/s with 3 asked to wait
+  (p95 536 ms); a password spray from one address was throttled from its 21st failure while the real student
+  signed in from elsewhere.
 
 ## Specification and decisions
 

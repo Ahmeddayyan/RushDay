@@ -65,5 +65,6 @@ single round trip rather than a lock-then-check-then-write with extra latency fo
 
 **v1 evidence (stage S13):** `load/k6/enrolment-rush.js` run against v1 — target: `accepted=30`, `OVERSOLD=0`,
 `enrolments_rejected_full=470`, `enrolments_shed=0`, zero `53300` in the API log, repeated once to show
-repeatability (`04-performance-and-ops.md` section 9 steps 1-2). Not yet recorded; filled in by
-`docs/load-results/2026-10-xx-v1-hardened.md` and `load/results/enrolment-rush-*.json`.
+repeatability (`04-performance-and-ops.md` section 9 steps 1-2). Recorded in [`docs/load-results/2026-10-02-v1-hardened.md`](../load-results/2026-10-02-v1-hardened.md) run 1: two runs on
+fresh clones, each 30 accepted, `OVERSOLD=0`, 470 `module-full`, 0 shed, 0 errors, 0 `53300`; raw summaries
+`load/results/enrolment-rush-20261002-*.json`. The 409s took 472-512 ms at p95 on the shared laptop, not the 50 ms target.

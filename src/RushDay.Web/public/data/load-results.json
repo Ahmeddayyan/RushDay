@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-29T06:11:00.950Z",
+  "generatedAt": "2026-10-02T15:25:05.836Z",
   "machine": "Developer laptop: Windows 11, .NET 10, PostgreSQL 18 (native)",
   "runs": [
     {
@@ -116,6 +116,187 @@
         "p99Ms": 8628.278732,
         "achievedRate": 710.8154158013713,
         "droppedIterations": 94100
+      }
+    },
+    {
+      "id": "enrolment-rush-20261002-201130",
+      "scenario": "enrolment-rush",
+      "version": "v1",
+      "label": "Enrolment rush (v1, atomic conditional update)",
+      "ranAt": "2026-10-02T20:11:30",
+      "source": "load/results/enrolment-rush-20261002-201130.json",
+      "notes": "500 signed-in students racing for 30 places on CS3099. v1 (S13), Development configuration per 04-performance-and-ops.md section 9, on the least-privilege rushday_app role, fresh TEMPLATE clone of the v0 database migrated and backfilled on start. Latency is the enrol requests alone.",
+      "metrics": {
+        "requests": 1501,
+        "failedRate": 0.31312458361092604,
+        "p50Ms": 192.3231,
+        "p95Ms": 512.2424349999999,
+        "maxMs": 584.3075,
+        "p99Ms": 557.8285389999999,
+        "achievedRate": 105.09599412789962,
+        "accepted": 30,
+        "rejectedFull": 470,
+        "capacity": 30,
+        "oversold": 0
+      }
+    },
+    {
+      "id": "enrolment-rush-20261002-201155",
+      "scenario": "enrolment-rush",
+      "version": "v1",
+      "label": "Enrolment rush (v1, repeat on a fresh clone)",
+      "ranAt": "2026-10-02T20:11:55",
+      "source": "load/results/enrolment-rush-20261002-201155.json",
+      "notes": "Repeat of the run above on its own fresh clone, for repeatability.",
+      "metrics": {
+        "requests": 1501,
+        "failedRate": 0.31312458361092604,
+        "p50Ms": 121.6097,
+        "p95Ms": 472.2124749999999,
+        "maxMs": 543.5643,
+        "p99Ms": 536.5480869999999,
+        "achievedRate": 106.68395671733082,
+        "accepted": 30,
+        "rejectedFull": 470,
+        "capacity": 30,
+        "oversold": 0
+      }
+    },
+    {
+      "id": "results-day-20261002-201224",
+      "scenario": "results-day",
+      "version": "v1",
+      "label": "Results day (v1, set-based dashboard, 5 queries)",
+      "ranAt": "2026-10-02T20:12:24",
+      "source": "load/results/results-day-20261002-201224.json",
+      "targetRate": 800,
+      "notes": "Ramping arrival rate to 800 requests/s over 200 signed-in students. v1 (S13), Development configuration per 04-performance-and-ops.md section 9, on the least-privilege rushday_app role, fresh TEMPLATE clone of the v0 database migrated and backfilled on start. Latency is the dashboard requests alone.",
+      "metrics": {
+        "requests": 104799,
+        "failedRate": 0,
+        "p50Ms": 3.2149,
+        "p95Ms": 5.1371,
+        "maxMs": 213.9923,
+        "p99Ms": 8.465810000000001,
+        "achievedRate": 426.92415962047215
+      }
+    },
+    {
+      "id": "dashboard-knee-1000rps-20261002-201706",
+      "scenario": "dashboard-knee",
+      "version": "v1",
+      "label": "Dashboard knee at 1,000 requests/s (v1)",
+      "ranAt": "2026-10-02T20:17:06",
+      "source": "load/results/dashboard-knee-1000rps-20261002-201706.json",
+      "targetRate": 1000,
+      "metrics": {
+        "requests": 30001,
+        "failedRate": 0.0016332788907036432,
+        "p50Ms": 4.3862,
+        "p95Ms": 463.9146,
+        "maxMs": 710.8409,
+        "p99Ms": 641.175,
+        "achievedRate": 1000.0333333333333
+      }
+    },
+    {
+      "id": "dashboard-knee-2000rps-20261002-201748",
+      "scenario": "dashboard-knee",
+      "version": "v1",
+      "label": "Dashboard knee at 2,000 requests/s (v1)",
+      "ranAt": "2026-10-02T20:17:48",
+      "source": "load/results/dashboard-knee-2000rps-20261002-201748.json",
+      "targetRate": 2000,
+      "metrics": {
+        "requests": 60002,
+        "failedRate": 0.48888370387653746,
+        "p50Ms": 875.627,
+        "p95Ms": 1256.554835,
+        "maxMs": 1700.3357,
+        "p99Ms": 1482.7463849999995,
+        "achievedRate": 2000.0666666666666,
+        "shed": 28028
+      }
+    },
+    {
+      "id": "dashboard-knee-3000rps-20261002-201832",
+      "scenario": "dashboard-knee",
+      "version": "v1",
+      "label": "Dashboard knee at 3,000 requests/s (v1)",
+      "ranAt": "2026-10-02T20:18:32",
+      "source": "load/results/dashboard-knee-3000rps-20261002-201832.json",
+      "targetRate": 3000,
+      "metrics": {
+        "requests": 89823,
+        "failedRate": 0.8409984079801387,
+        "p50Ms": 74.6441,
+        "p95Ms": 1501.2929799999997,
+        "maxMs": 7785.7708,
+        "p99Ms": 6220.759865999999,
+        "achievedRate": 2994.1,
+        "droppedIterations": 179,
+        "shed": 72682
+      }
+    },
+    {
+      "id": "dashboard-knee-4000rps-20261002-201917",
+      "scenario": "dashboard-knee",
+      "version": "v1",
+      "label": "Dashboard knee at 4,000 requests/s (v1)",
+      "ranAt": "2026-10-02T20:19:17",
+      "source": "load/results/dashboard-knee-4000rps-20261002-201917.json",
+      "targetRate": 4000,
+      "metrics": {
+        "requests": 103624,
+        "failedRate": 0.949133405388713,
+        "p50Ms": 624.5876499999999,
+        "p95Ms": 1899.19,
+        "maxMs": 17635.2546,
+        "p99Ms": 10726.307529000005,
+        "achievedRate": 3454.133333333333,
+        "droppedIterations": 16378,
+        "shed": 49035
+      }
+    },
+    {
+      "id": "login-storm-guard-20261002-202047",
+      "scenario": "login-storm",
+      "version": "v1",
+      "label": "Login storm, guard mode (v1, production-strength PBKDF2 guard)",
+      "ranAt": "2026-10-02T20:20:47",
+      "source": "load/results/login-storm-guard-20261002-202047.json",
+      "mode": "guard",
+      "notes": "Ramp 5 to 40 logins/s over 2m20s with LoginConcurrency=8, LoginQueue=16 and the other login limiters opened up. Rate is successful sign-ins averaged over the whole ramp; latency is the login POST alone.",
+      "metrics": {
+        "requests": 6298,
+        "failedRate": 0.000476341695776437,
+        "p50Ms": 197,
+        "p95Ms": 535.7999999999997,
+        "maxMs": 640,
+        "p99Ms": 600,
+        "achievedRate": 22.403409148846013,
+        "loginsOk": 3146,
+        "loginsRateLimited": 3
+      }
+    },
+    {
+      "id": "login-storm-spray-20261002-202336",
+      "scenario": "login-storm",
+      "version": "v1",
+      "label": "Login storm, spray mode (v1, per-IP failure window 20)",
+      "ranAt": "2026-10-02T20:23:36",
+      "source": "load/results/login-storm-spray-20261002-202336.json",
+      "mode": "spray",
+      "notes": "Wrong passwords for 500 usernames from one address, then the correct password for S000001 from a second address.",
+      "metrics": {
+        "requests": 1002,
+        "failedRate": 0.499001996007984,
+        "p50Ms": 0.51495,
+        "p95Ms": 1.09172,
+        "maxMs": 196.1584,
+        "achievedRate": 0.28046313438306947,
+        "loginsOk": 1,
+        "loginsRateLimited": 480
       }
     }
   ]

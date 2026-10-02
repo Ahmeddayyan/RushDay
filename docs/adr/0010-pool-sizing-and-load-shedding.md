@@ -63,5 +63,8 @@ requests/second knee; the throughput ceiling under sustained saturation); raw su
 
 **v1 evidence (stage S13):** `load/k6/dashboard-knee.js` at 1,000/2,000/3,000/4,000 requests/second — target: 503
 with `Retry-After` inside a second for the excess, zero `53300` in the API log at any rate
-(`04-performance-and-ops.md` section 9 step 4). Not yet recorded; filled in by
-`docs/load-results/2026-10-xx-v1-hardened.md` and `load/results/dashboard-knee-*.json`.
+(`04-performance-and-ops.md` section 9 step 4). Recorded in [`docs/load-results/2026-10-02-v1-hardened.md`](../load-results/2026-10-02-v1-hardened.md) run 3 and
+`load/results/dashboard-knee-*-20261002-*.json`: zero `53300` at every rate; 1,000/s fully served at p95 464 ms; the
+503s answered in under 26 ms at p99; but at 3,000-4,000/s on the laptop admitted requests waited 6-15 s behind the
+Development queue of 1,024 and connections beyond Kestrel's 2,000 cap were closed, so the target holds for the 503s, not
+for every excess request.

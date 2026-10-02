@@ -22,9 +22,26 @@ const checkOnly = process.argv.includes('--check')
 /** Builds one LoadRun (05-frontend.md section 8) from a runs.json entry and its k6 JSON summary. */
 function summarise(entry, result) {
   const metrics = result.metrics ?? {}
-  const duration = metrics.http_req_duration ?? {}
-  const failed = metrics.http_req_failed ?? {}
-  const reqs = metrics.http_reqs ?? {}
+  // v1 scripts sign in during setup(), so the untagged totals mix those logins in. Prefer the
+  // measured endpoint's own (report-only threshold) submetric when the summary has one; v0's
+  // summaries have none and fall through to the totals, which for v0 were the endpoint alone.
+  const duration =
+    metrics['http_req_duration{endpoint:dashboard}'] ??
+    metrics['http_req_duration{endpoint:enrol}'] ??
+    metrics.login_latency_ms ??
+    metrics.http_req_duration ??
+    {}
+  const failed = metrics['http_req_failed{endpoint:dashboard}'] ?? metrics.http_req_failed ?? {}
+  const tagged = metrics['http_req_failed{endpoint:dashboard}']
+  // With `durationSeconds` in runs.json (the measured scenario's own length), the achieved rate is
+  // the endpoint's requests over that window rather than all requests over the whole run, setup included.
+  const reqs =
+    tagged && entry.durationSeconds
+      ? {
+          count: tagged.passes + tagged.fails,
+          rate: (tagged.passes + tagged.fails) / entry.durationSeconds,
+        }
+      : (metrics.http_reqs ?? {})
   const dropped = metrics.dropped_iterations
 
   const run = {
@@ -55,8 +72,12 @@ function summarise(entry, result) {
   if (metrics.enrolments_rejected_full) run.metrics.rejectedFull = metrics.enrolments_rejected_full.count
   if (metrics.enrolments_errored) run.metrics.errored = metrics.enrolments_errored.count
   if (metrics.shed_503) run.metrics.shed = metrics.shed_503.count
-  if (metrics.logins_ok) run.metrics.loginsOk = metrics.logins_ok.count
-  if (metrics.logins_rate_limited) run.metrics.loginsRateLimited = metrics.logins_rate_limited.count
+  const loginsOk = metrics.logins_ok ?? metrics.login_200
+  const loginsRateLimited = metrics.logins_rate_limited ?? metrics.login_429
+  if (loginsOk) run.metrics.loginsOk = loginsOk.count
+  // login-storm sends a CSRF GET before every login POST, so http_reqs counts each sign-in twice.
+  if (entry.scenario === 'login-storm' && loginsOk?.rate !== undefined) run.metrics.achievedRate = loginsOk.rate
+  if (loginsRateLimited) run.metrics.loginsRateLimited = loginsRateLimited.count
   // `capacity` is a business fact (the module's places at run time), not a k6 metric, so it comes
   // from runs.json rather than the summary; when both it and `accepted` are known, `oversold`
   // (05-frontend.md section 8, the EnrolmentRushChart hero figure) is derived from them.

@@ -91,5 +91,5 @@ rather than describing an artificially smoothed-over number.
   `src/RushDay.Web/public/data/load-results.json`, which the public `/story` page and the admin ops page render
   (`--check` exits non-zero when the committed JSON is stale; run in CI).
 
-See `docs/load-results/2026-09-27-v0-baseline.md` for the v0 numbers and `docs/load-results/2026-10-xx-v1-hardened.md`
+See `docs/load-results/2026-09-27-v0-baseline.md` for the v0 numbers and `docs/load-results/2026-10-02-v1-hardened.md`
 (written in stage S13) for the v1 comparison.

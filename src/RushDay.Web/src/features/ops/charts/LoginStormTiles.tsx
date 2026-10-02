@@ -43,7 +43,7 @@ export function LoginStormTiles() {
       {
         key: 'rate',
         label: 'Sign-ins per second reached',
-        caption: 'http_reqs rate',
+        caption: 'login_200 rate',
         value: guardRun.metrics.achievedRate
           ? `${formatNumber(Math.round(guardRun.metrics.achievedRate))}/s`
           : 'not recorded',
@@ -51,7 +51,7 @@ export function LoginStormTiles() {
       {
         key: 'accepted',
         label: 'Accepted',
-        caption: 'logins_ok',
+        caption: 'login_200',
         value:
           guardRun.metrics.loginsOk === undefined
             ? 'not recorded'
@@ -60,7 +60,7 @@ export function LoginStormTiles() {
       {
         key: 'waited',
         label: 'Asked to wait',
-        caption: 'logins_rate_limited (429)',
+        caption: 'login_429',
         value:
           guardRun.metrics.loginsRateLimited === undefined
             ? 'not recorded'

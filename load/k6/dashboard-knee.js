@@ -28,6 +28,11 @@ export const options = {
   },
   setupTimeout: '5m',
   summaryTrendStats: ['avg', 'med', 'p(95)', 'p(99)', 'max'],
+  // Report-only (always true): the dashboard requests' own latency and failure rate, apart from setup()'s logins.
+  thresholds: {
+    'http_req_duration{endpoint:dashboard}': ['p(95)>=0'],
+    'http_req_failed{endpoint:dashboard}': ['rate>=0'],
+  },
 };
 
 export function setup() {

@@ -68,6 +68,7 @@ the comparison is qualitative (a scheduler v0 never had, versus a stored instant
 
 **v1 evidence (stage S13):** the demo re-run procedure in `docs/admin-guide.md` ("Re-run results day on the demo")
 is the functional evidence; `load/k6/login-storm.js` and every authenticated scenario's `setup()` are the load
-evidence that many distinct demo accounts authenticate cheaply. Not yet recorded as a dated load-results entry;
-filled in alongside the other v1 runs by `docs/load-results/2026-10-xx-v1-hardened.md` if a startup-time measurement
-is added.
+evidence that many distinct demo accounts authenticate cheaply. Recorded in [`docs/load-results/2026-10-02-v1-hardened.md`](../load-results/2026-10-02-v1-hardened.md) (setup and least-privilege
+rehearsal): on a clone of the 20,000-student v0 database the demo-mode backfills completed in 8.6 s on the
+application role, `demo_accounts` touching 40,080 rows in 2.4 s, and every load run signed in its 200-500 students in
+`setup()` without error.

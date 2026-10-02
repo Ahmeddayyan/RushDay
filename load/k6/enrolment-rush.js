@@ -31,6 +31,8 @@ export const options = {
   },
   setupTimeout: '5m',
   summaryTrendStats: ['avg', 'med', 'p(95)', 'p(99)', 'max'],
+  // Report-only (always true): makes k6 export the enrol requests' own latency, apart from setup()'s logins.
+  thresholds: { 'http_req_duration{endpoint:enrol}': ['p(95)>=0'] },
 };
 
 export function setup() {

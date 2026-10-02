@@ -1,0 +1,133 @@
+[
+  {
+    "file": "enrolment-rush-20260927-201228.json",
+    "scenario": "enrolment-rush",
+    "version": "v0",
+    "label": "Enrolment rush (v0, read-then-write update)",
+    "ranAt": "2026-09-27T20:12:28",
+    "capacity": 30,
+    "notes": "500 students racing for 30 places on CS3099 against the v0 API, which has no atomic conditional update."
+  },
+  {
+    "file": "results-day-20260927-201336.json",
+    "scenario": "results-day",
+    "version": "v0",
+    "label": "Results day (v0, N+1 dashboard query)",
+    "ranAt": "2026-09-27T20:13:36",
+    "targetRate": 800,
+    "notes": "Ramping arrival rate to 800 requests/s against the v0 dashboard endpoint."
+  },
+  {
+    "file": "dashboard-knee-1000rps-20260927-201844.json",
+    "scenario": "dashboard-knee",
+    "version": "v0",
+    "label": "Dashboard knee at 1,000 requests/s (v0)",
+    "ranAt": "2026-09-27T20:18:44",
+    "targetRate": 1000
+  },
+  {
+    "file": "dashboard-knee-2000rps-20260927-201844.json",
+    "scenario": "dashboard-knee",
+    "version": "v0",
+    "label": "Dashboard knee at 2,000 requests/s (v0)",
+    "ranAt": "2026-09-27T20:18:44",
+    "targetRate": 2000
+  },
+  {
+    "file": "dashboard-knee-3000rps-20260927-201844.json",
+    "scenario": "dashboard-knee",
+    "version": "v0",
+    "label": "Dashboard knee at 3,000 requests/s (v0)",
+    "ranAt": "2026-09-27T20:18:44",
+    "targetRate": 3000
+  },
+  {
+    "file": "dashboard-knee-4000rps-20260927-201844.json",
+    "scenario": "dashboard-knee",
+    "version": "v0",
+    "label": "Dashboard knee at 4,000 requests/s (v0)",
+    "ranAt": "2026-09-27T20:18:44",
+    "targetRate": 4000
+  },
+  {
+    "file": "enrolment-rush-20261002-201130.json",
+    "scenario": "enrolment-rush",
+    "version": "v1",
+    "label": "Enrolment rush (v1, atomic conditional update)",
+    "capacity": 30,
+    "notes": "500 signed-in students racing for 30 places on CS3099. v1 (S13), Development configuration per 04-performance-and-ops.md section 9, on the least-privilege rushday_app role, fresh TEMPLATE clone of the v0 database migrated and backfilled on start. Latency is the enrol requests alone.",
+    "ranAt": "2026-10-02T20:11:30"
+  },
+  {
+    "file": "enrolment-rush-20261002-201155.json",
+    "scenario": "enrolment-rush",
+    "version": "v1",
+    "label": "Enrolment rush (v1, repeat on a fresh clone)",
+    "capacity": 30,
+    "notes": "Repeat of the run above on its own fresh clone, for repeatability.",
+    "ranAt": "2026-10-02T20:11:55"
+  },
+  {
+    "file": "results-day-20261002-201224.json",
+    "scenario": "results-day",
+    "version": "v1",
+    "label": "Results day (v1, set-based dashboard, 5 queries)",
+    "targetRate": 800,
+    "notes": "Ramping arrival rate to 800 requests/s over 200 signed-in students. v1 (S13), Development configuration per 04-performance-and-ops.md section 9, on the least-privilege rushday_app role, fresh TEMPLATE clone of the v0 database migrated and backfilled on start. Latency is the dashboard requests alone.",
+    "ranAt": "2026-10-02T20:12:24"
+  },
+  {
+    "file": "dashboard-knee-1000rps-20261002-201706.json",
+    "scenario": "dashboard-knee",
+    "version": "v1",
+    "label": "Dashboard knee at 1,000 requests/s (v1)",
+    "targetRate": 1000,
+    "durationSeconds": 30,
+    "ranAt": "2026-10-02T20:17:06"
+  },
+  {
+    "file": "dashboard-knee-2000rps-20261002-201748.json",
+    "scenario": "dashboard-knee",
+    "version": "v1",
+    "label": "Dashboard knee at 2,000 requests/s (v1)",
+    "targetRate": 2000,
+    "durationSeconds": 30,
+    "ranAt": "2026-10-02T20:17:48"
+  },
+  {
+    "file": "dashboard-knee-3000rps-20261002-201832.json",
+    "scenario": "dashboard-knee",
+    "version": "v1",
+    "label": "Dashboard knee at 3,000 requests/s (v1)",
+    "targetRate": 3000,
+    "durationSeconds": 30,
+    "ranAt": "2026-10-02T20:18:32"
+  },
+  {
+    "file": "dashboard-knee-4000rps-20261002-201917.json",
+    "scenario": "dashboard-knee",
+    "version": "v1",
+    "label": "Dashboard knee at 4,000 requests/s (v1)",
+    "targetRate": 4000,
+    "durationSeconds": 30,
+    "ranAt": "2026-10-02T20:19:17"
+  },
+  {
+    "file": "login-storm-guard-20261002-202047.json",
+    "scenario": "login-storm",
+    "version": "v1",
+    "mode": "guard",
+    "label": "Login storm, guard mode (v1, production-strength PBKDF2 guard)",
+    "notes": "Ramp 5 to 40 logins/s over 2m20s with LoginConcurrency=8, LoginQueue=16 and the other login limiters opened up. Rate is successful sign-ins averaged over the whole ramp; latency is the login POST alone.",
+    "ranAt": "2026-10-02T20:20:47"
+  },
+  {
+    "file": "login-storm-spray-20261002-202336.json",
+    "scenario": "login-storm",
+    "version": "v1",
+    "mode": "spray",
+    "label": "Login storm, spray mode (v1, per-IP failure window 20)",
+    "notes": "Wrong passwords for 500 usernames from one address, then the correct password for S000001 from a second address.",
+    "ranAt": "2026-10-02T20:23:36"
+  }
+]

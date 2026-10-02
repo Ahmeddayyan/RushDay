@@ -3,18 +3,77 @@ name: CI
 # Render watches these checks: a push to main is deployed only when this workflow passes
 # (render.yaml sets autoDeployTrigger: checksPass).
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
   pull_request:
 
 jobs:
+  # Builds and verifies the SPA, then hands the built wwwroot to build-and-test so the .NET job
+  # never needs Node (05-frontend.md section 14).
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/RushDay.Web
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/RushDay.Web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      - name: Load-results data is up to date
+        run: npm run load-results -- --check
+
+      - name: Build
+        run: npm run build
+
+      - name: Bundle budget
+        run: npm run bundle-budget
+
+      - name: Dependency audit (blocking)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Dependency audit (full, informational)
+        run: npm audit
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: web-dist
+          path: src/RushDay.Api/wwwroot
+
   build-and-test:
+    needs: web
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-dotnet@v5
+      # The SPA is already built; the .NET build embeds it as static content without touching Node.
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: web-dist
+          path: src/RushDay.Api/wwwroot
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
 
@@ -23,6 +82,11 @@ jobs:
 
       - name: Build
         run: dotnet build --no-restore --configuration Release
+
+      - name: Vulnerable package scan
+        run: |
+          dotnet list package --vulnerable --include-transitive 2>&1 | tee vulnerable.txt
+          ! grep -q "has the following vulnerable packages" vulnerable.txt
 
       - name: Unit tests
         run: dotnet test tests/RushDay.UnitTests --no-build --configuration Release --logger trx --results-directory TestResults
@@ -33,9 +97,101 @@ jobs:
       - name: Docker image builds
         run: docker build --tag rushday-api:ci .
 
+      # The owner's story sentence pair is verbatim everywhere it must be, and no HTML is rendered from data.
+      - name: Story check
+        run: pwsh scripts/check-story.ps1
+
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: test-results
           path: TestResults
+
+  # Playwright journeys and axe scans against the real API and PostgreSQL (05-frontend.md sections 13.2 and 14).
+  # A red e2e blocks the deploy like the other two checks.
+  e2e:
+    needs: web
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: rushday
+          POSTGRES_PASSWORD: rushday
+          POSTGRES_DB: rushday
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rushday -d rushday"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # No Smart App Control here: Playwright's webServer starts the API with dotnet run on the build below.
+      E2E_SERVER_COMMAND: dotnet run --project ../RushDay.Api --configuration Release --no-build
+      E2E_CONNECTION_STRING: Host=localhost;Port=5432;Database=rushday;Username=rushday;Password=rushday
+      Auth__SecurityStampIntervalMinutes: '0'
+      # The real administrator the account journeys use (ROOT_ADMIN in e2e/fixtures.ts; scripts/e2e.ps1 locally).
+      E2E_ADMIN_USERNAME: e2e-admin
+      E2E_ADMIN_PASSWORD: Harbour-Lantern-4821
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: web-dist
+          path: src/RushDay.Api/wwwroot
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      # setup-dotnet caches only with NuGet lock files, which this repository does not use.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/RushDay.Web/package-lock.json
+
+      - name: Build the API
+        run: dotnet build src/RushDay.Api/RushDay.Api.csproj --configuration Release
+
+      - name: Install
+        working-directory: src/RushDay.Web
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: src/RushDay.Web
+        run: npx playwright install --with-deps chromium
+
+      # The demo seed, then a start with demo mode off that creates the one real administrator (the demo
+      # administrator can only provision read-only demo accounts, 02-api.md section 8.5). Playwright's own start
+      # of the API turns demo mode back on, which restores the demo accounts.
+      - name: Prepare the e2e data
+        working-directory: src/RushDay.Web
+        env:
+          ConnectionStrings__RushDay: ${{ env.E2E_CONNECTION_STRING }}
+          Database__SeedStudentCount: '300'
+          Database__SeedResultsDay: '2026-01-26T09:00:00Z'
+        run: |
+          Demo__Enabled=true $E2E_SERVER_COMMAND -- --migrate-and-seed
+          Demo__Enabled=false Bootstrap__AdminUsername="$E2E_ADMIN_USERNAME" \
+            Bootstrap__AdminPassword="$E2E_ADMIN_PASSWORD" $E2E_SERVER_COMMAND -- --migrate-and-seed
+
+      - name: Playwright journeys and accessibility scans
+        working-directory: src/RushDay.Web
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: playwright-report
+          path: src/RushDay.Web/playwright-report

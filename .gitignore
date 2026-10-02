@@ -37,8 +37,15 @@ bld/
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/
-# Uncomment if you have tasks that create the project's static files in wwwroot
-#wwwroot/
+
+# Front end (src/RushDay.Web). wwwroot is the Vite build output, produced by `npm run build`.
+src/RushDay.Api/wwwroot/
+node_modules/
+dist/
+playwright-report/
+test-results/
+coverage/
+blob-report/
 
 # Visual Studio 2017 auto generated files
 Generated\ Files/

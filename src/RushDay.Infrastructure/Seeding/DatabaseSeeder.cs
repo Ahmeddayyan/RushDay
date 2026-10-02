@@ -18,12 +18,15 @@ public static class DatabaseSeeder
     public const string HotModuleCode = "CS3099";
     public const int HotModuleCapacity = 30;
 
+    /// <summary>Every seeded row is a completed 2025/26 autumn enrolment with a published mark.</summary>
+    public const string SeedAcademicYear = "2025/26";
+
     private const int ModuleCredits = 15;
     private const int AutumnCapacity = 1_500;
     private const int SpringCapacity = 300;
     private const int BatchSize = 5_000;
 
-    private static readonly string[] Departments = ["CS", "MA", "PH", "EE"];
+    internal static readonly string[] Departments = ["CS", "MA", "PH", "EE"];
 
     private static readonly Dictionary<string, string[]> TitlesByDepartment = new()
     {
@@ -39,7 +42,7 @@ public static class DatabaseSeeder
         "BSc Physics", "BEng Electrical Engineering", "BSc Data Science",
     ];
 
-    private static readonly string[] FirstNames =
+    internal static readonly string[] FirstNames =
     [
         "Aisha", "Ahmed", "Amelia", "Arjun", "Ben", "Chloe", "Daniel", "Dina", "Ella", "Ethan",
         "Fatima", "George", "Hannah", "Hassan", "Isla", "Jack", "Jamal", "Kate", "Leo", "Layla",
@@ -47,7 +50,7 @@ public static class DatabaseSeeder
         "Tariq", "Thomas", "Uma", "Victor", "Wei", "Yara", "Yusuf", "Zainab", "Zoe", "Zara",
     ];
 
-    private static readonly string[] LastNames =
+    internal static readonly string[] LastNames =
     [
         "Ahmed", "Ali", "Begum", "Brown", "Chen", "Clarke", "Davies", "Evans", "Garcia", "Hayder",
         "Hussain", "Jones", "Khan", "Kim", "Kumar", "Lee", "Martin", "Miller", "Nguyen", "Okafor",
@@ -107,6 +110,7 @@ public static class DatabaseSeeder
                     {
                         Id = Guid.CreateVersion7(),
                         Code = $"{department}{level}{numberOffset + i + 1:D3}",
+                        Department = department,
                         Title = $"{baseTitle} {ToRoman(level)}{suffix}",
                         Credits = ModuleCredits,
                         Capacity = semester == Semester.Autumn ? AutumnCapacity : SpringCapacity,
@@ -120,6 +124,7 @@ public static class DatabaseSeeder
         {
             Id = Guid.CreateVersion7(),
             Code = HotModuleCode,
+            Department = HotModuleCode[..2],
             Title = "Advanced Machine Learning",
             Credits = ModuleCredits,
             Capacity = HotModuleCapacity,
@@ -183,7 +188,7 @@ public static class DatabaseSeeder
     {
         var autumnByLevel = modules
             .Where(m => m.Semester == Semester.Autumn)
-            .GroupBy(m => m.Code[2] - '0')
+            .GroupBy(m => m.Level)
             .ToDictionary(g => g.Key, g => g.ToArray());
 
         var termStart = new DateTimeOffset(2025, 9, 15, 9, 0, 0, TimeSpan.Zero);
@@ -202,6 +207,9 @@ public static class DatabaseSeeder
                     StudentId = student.Id,
                     ModuleId = module.Id,
                     EnrolledAt = termStart.AddMinutes(random.Next(0, 60 * 24 * 7)),
+                    Status = EnrolmentStatus.Active,
+                    Source = EnrolmentSource.Seed,
+                    AcademicYear = SeedAcademicYear,
                 });
             }
         }
@@ -220,7 +228,11 @@ public static class DatabaseSeeder
                 StudentId = enrolment.StudentId,
                 ModuleId = enrolment.ModuleId,
                 Mark = Math.Clamp((int)Math.Round(NextGaussian(random, mean: 62, standardDeviation: 12)), 0, 100),
+                Outcome = GradeOutcome.Mark,
+                Status = GradeStatus.Published,
                 PublishedAt = options.ResultsDay,
+                UpdatedAt = options.ResultsDay,
+                Version = 1,
             });
         }
 

@@ -11,6 +11,9 @@ public static class Classification
         _ => "Fail",
     };
 
+    /// <summary>The band label of one mark.</summary>
+    public static string Band(int mark) => FromAverage(mark);
+
     /// <summary>Credit-weighted average mark, or null when nothing has been graded.</summary>
     public static double? WeightedAverage(IReadOnlyCollection<(int Mark, int Credits)> results)
     {
@@ -23,5 +26,25 @@ public static class Classification
         }
 
         return results.Sum(r => (double)r.Mark * r.Credits) / totalCredits;
+    }
+
+    /// <summary>
+    /// The (mark, credits) pairs that count towards an average: only <see cref="GradeOutcome.Mark"/> outcomes.
+    /// Absences and deferrals never count, whatever their credits.
+    /// </summary>
+    public static IReadOnlyList<(int Mark, int Credits)> Graded(IEnumerable<(GradeOutcome Outcome, int? Mark, int Credits)> results)
+    {
+        ArgumentNullException.ThrowIfNull(results);
+
+        var graded = new List<(int Mark, int Credits)>();
+        foreach (var (outcome, mark, credits) in results)
+        {
+            if (outcome == GradeOutcome.Mark && mark is { } value)
+            {
+                graded.Add((value, credits));
+            }
+        }
+
+        return graded;
     }
 }

@@ -1,6 +1,10 @@
-# Render Blueprint: one free web service built from the Dockerfile.
-# The database is a free Neon PostgreSQL instance; its connection string is set in the Render dashboard.
+# Render Blueprint: one free web service built from the Dockerfile, backed by a free Neon PostgreSQL database.
 # Render deploys a push to main only after the GitHub Actions checks on it pass (checksPass).
+#
+# This Blueprint is the customer deployment path, so it never sets demo or seeding values (D29): a university that
+# applies it gets roles, settings and its bootstrap administrator, and nothing synthetic. The public demo sets
+# Demo__Enabled=true and Demo__PublicDemoAcknowledged=true in the Render dashboard only.
+# The sync: false values are secrets or per-institution settings; Render prompts for them when the Blueprint is applied.
 services:
   - type: web
     name: rushday-api
@@ -8,7 +12,7 @@ services:
     plan: free
     region: frankfurt
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /health
+    healthCheckPath: /api/health/live
     autoDeployTrigger: checksPass
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
@@ -19,9 +23,21 @@ services:
         value: "8080"
       - key: Database__MigrateOnStartup
         value: "true"
-      - key: Database__SeedOnStartup
+      - key: Database__BackfillOnStartup
         value: "true"
-      - key: Database__SeedStudentCount
-        value: "20000"
+      - key: Security__TrustForwardedHeaders
+        value: "true"
+      - key: Branding__TimeZone
+        value: Europe/London
       - key: ConnectionStrings__RushDay
+        sync: false
+      - key: ConnectionStrings__Migrations
+        sync: false
+      - key: DataProtection__KeyEncryptionKey
+        sync: false
+      - key: Bootstrap__AdminPassword
+        sync: false
+      - key: Branding__InstitutionName
+        sync: false
+      - key: Branding__InstitutionShortName
         sync: false

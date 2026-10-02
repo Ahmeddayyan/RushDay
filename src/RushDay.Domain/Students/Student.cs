@@ -5,7 +5,11 @@ public sealed class Student
 {
     public Guid Id { get; init; }
     public required string StudentNumber { get; init; }
-    public required string FullName { get; init; }
-    public required string Programme { get; init; }
-    public int YearOfStudy { get; init; }
+    public required string FullName { get; set; }
+    public required string Programme { get; set; }
+    public int YearOfStudy { get; set; }
+    public string? Email { get; set; }
+
+    /// <summary>Set when an administrator marks the student as having left; such a student cannot be enrolled by anyone.</summary>
+    public DateTimeOffset? LeftAt { get; set; }
 }

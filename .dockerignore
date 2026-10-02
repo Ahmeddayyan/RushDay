@@ -7,3 +7,13 @@ load/
 tests/
 scripts/
 *.md
+
+# Front end: dependencies and outputs are produced inside the image, never copied in.
+**/node_modules/
+src/RushDay.Web/dist/
+src/RushDay.Web/coverage/
+src/RushDay.Web/playwright-report/
+src/RushDay.Web/test-results/
+src/RushDay.Web/tests/
+src/RushDay.Web/blob-report/
+src/RushDay.Api/wwwroot/

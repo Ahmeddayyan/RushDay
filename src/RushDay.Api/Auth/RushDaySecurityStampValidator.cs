@@ -31,7 +31,7 @@ public sealed class RushDaySecurityStampValidator(
     public static bool IsDue(ClaimsPrincipal? principal, DateTimeOffset now, TimeSpan interval)
     {
         var checkedAt = principal?.UnixSecondsOf(RushDayClaims.StampValidatedAt) ?? principal?.UnixSecondsOf(RushDayClaims.IssuedAt);
-        return interval <= TimeSpan.Zero || checkedAt is null || now.ToUnixTimeSeconds() - checkedAt.Value > interval.TotalSeconds;
+        return checkedAt is null || now.ToUnixTimeSeconds() - checkedAt.Value > interval.TotalSeconds;
     }
 
     public override async Task ValidateAsync(CookieValidatePrincipalContext context)

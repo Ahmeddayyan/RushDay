@@ -3,6 +3,9 @@ name: CI
 # Render watches these checks: a push to main is deployed only when this workflow passes
 # (render.yaml sets autoDeployTrigger: checksPass).
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]

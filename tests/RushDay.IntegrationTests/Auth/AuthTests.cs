@@ -142,6 +142,45 @@ public sealed class AuthTests(RushDayApiFactory factory)
     }
 
     [Fact]
+    public async Task Disabled_account_failures_never_run_lockout_bookkeeping()
+    {
+        var user = await factory.ProvisionAsync();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<RushDayDbContext>();
+            var now = factory.Clock.GetUtcNow();
+            await db.Users.Where(u => u.Id == user.Id).ExecuteUpdateAsync(s => s.SetProperty(u => u.DisabledAt, now));
+        }
+
+        var clients = ThreeAddresses.Select(ip => factory.CreateCookieClient(ip)).ToList();
+        try
+        {
+            foreach (var client in clients)
+            {
+                await client.RefreshCsrfAsync();
+            }
+
+            for (var attempt = 0; attempt < 10; attempt++)
+            {
+                using var failed = await clients[attempt % 3].PostLoginAsync(user.UserName!, "Wrong-Password-" + attempt);
+                await failed.AssertProblemAsync(HttpStatusCode.Unauthorized, "invalid-credentials");
+            }
+
+            var after = await factory.ReadUserAsync(user.Id);
+            Assert.Equal(0, after.AccessFailedCount);
+            Assert.Null(after.LockoutEnd);
+
+            await using var auditScope = factory.Services.CreateAsyncScope();
+            var auditDb = auditScope.ServiceProvider.GetRequiredService<RushDayDbContext>();
+            Assert.False(await auditDb.AuditEvents.AnyAsync(a => a.Action == AuditActions.AuthLockedOut && a.SubjectId == user.Id.ToString()));
+        }
+        finally
+        {
+            clients.ForEach(c => c.Dispose());
+        }
+    }
+
+    [Fact]
     public async Task Single_address_spray_is_rate_limited_not_locked()
     {
         await using var host = factory.Derive(b => b.UseSetting("RateLimiting:LoginFailuresPerIpPer10Minutes", "20"));

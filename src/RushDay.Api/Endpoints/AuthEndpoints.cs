@@ -152,10 +152,11 @@ public static class AuthEndpoints
             }
         }
 
+        // An account that cannot sign in gains nothing from lockout bookkeeping, and would audit a lockout per attempt.
         if (result is null)
         {
             attempt.MarkFailed();
-            await RecordFailureAsync(s, user, usernameHash, ipHash, clientKey, countTowardLockout: true);
+            await RecordFailureAsync(s, user, usernameHash, ipHash, clientKey, countTowardLockout: false);
             return InvalidCredentials(s, RushDayMetrics.LoginOutcomes.Failed, usernameHash, ipHash);
         }
 

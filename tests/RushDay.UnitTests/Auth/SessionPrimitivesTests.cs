@@ -29,6 +29,14 @@ public sealed class SessionPrimitivesTests
         Assert.True(RushDaySecurityStampValidator.IsDue(new ClaimsPrincipal(new ClaimsIdentity()), Now, TimeSpan.FromMinutes(5)));
     }
 
+    [Fact]
+    public void A_zero_interval_checks_every_request_even_within_the_same_second()
+    {
+        var principal = Principal((RushDayClaims.IssuedAt, Now), (RushDayClaims.StampValidatedAt, Now));
+
+        Assert.True(RushDaySecurityStampValidator.IsDue(principal, Now, TimeSpan.Zero));
+    }
+
     /// <summary>RFC 6238 appendix B, SHA-1, T = 59 s: 94287082, whose last six digits are the 6-digit code.</summary>
     [Fact]
     public void Totp_codes_match_the_rfc_6238_vectors()

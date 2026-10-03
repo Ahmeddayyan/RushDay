@@ -82,6 +82,7 @@ docs/adr                  architecture decision records: the reasoning behind ea
 docs/load-results         what each load run showed, with numbers
 docs/deployment.md        every configuration variable, the customer deployment path, key rotation, backup/restore
 docs/admin-guide.md       running the product day to day: windows, publishing, overrides, accounts, the demo switch
+docs/user-manual.md       how to use RushDay as a student, lecturer or administrator, with screenshots
 src/RushDay.Domain        entities and pure rules (no I/O)
 src/RushDay.Infrastructure EF Core, migrations, the idempotent startup backfills
 src/RushDay.Api           endpoints, contracts, security, observability

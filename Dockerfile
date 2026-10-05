@@ -36,7 +36,7 @@ RUN dotnet publish src/RushDay.Api/RushDay.Api.csproj --configuration Release --
 # ---- Runtime ---------------------------------------------------------------------------------------
 # Chiseled: no shell, no package manager. Time-zone data is not needed (the server never formats in a
 # zone, D26). Runs as the image's built-in non-root user.
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:9651fa59abcdf177c30392cb44a820605ca5d618429ab37acbf6e7c644510b02 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:48e51f2f6798897be7ac4e775c049ed8fe60d3190f637e1f9c9dc7513efa659c AS runtime
 WORKDIR /app
 COPY --from=build /app .
 ENV ASPNETCORE_HTTP_PORTS=8080
